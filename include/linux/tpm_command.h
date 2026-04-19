@@ -184,6 +184,7 @@ enum tpm2_structures {
 	TPM2_ST_NO_SESSIONS	= 0x8001,
 	TPM2_ST_SESSIONS	= 0x8002,
 	TPM2_ST_CREATION	= 0x8021,
+	TPM2_ST_HASHCHECK	= 0x8024,
 };
 
 /* Indicates from what layer of the software stack the error comes from */
@@ -218,12 +219,15 @@ enum tpm2_command_codes {
 	TPM2_CC_NV_READ			= 0x014E,
 	TPM2_CC_CREATE			= 0x0153,
 	TPM2_CC_LOAD			= 0x0157,
+	TPM2_CC_RSA_DECRYPT		= 0x0159,
 	TPM2_CC_SEQUENCE_UPDATE		= 0x015C,
+	TPM2_CC_SIGN			= 0x015D,
 	TPM2_CC_UNSEAL			= 0x015E,
 	TPM2_CC_CONTEXT_LOAD		= 0x0161,
 	TPM2_CC_CONTEXT_SAVE		= 0x0162,
 	TPM2_CC_FLUSH_CONTEXT		= 0x0165,
 	TPM2_CC_READ_PUBLIC		= 0x0173,
+	TPM2_CC_RSA_ENCRYPT		= 0x0174,
 	TPM2_CC_START_AUTH_SESS		= 0x0176,
 	TPM2_CC_VERIFY_SIGNATURE	= 0x0177,
 	TPM2_CC_GET_CAPABILITY		= 0x017A,
@@ -276,6 +280,8 @@ enum tpm2_mso_type {
 enum tpm2_curves {
 	TPM2_ECC_NONE		= 0x0000,
 	TPM2_ECC_NIST_P256	= 0x0003,
+	TPM2_ECC_NIST_P384	= 0x0004,
+	TPM2_ECC_NIST_P521	= 0x0005,
 };
 
 enum tpm2_object_attributes {
@@ -455,6 +461,7 @@ struct tpm2_context {
 /* If you add a new hash to this, increment TPM_MAX_HASHES below */
 enum tpm_algorithms {
 	TPM_ALG_ERROR		= 0x0000,
+	TPM_ALG_RSA		= 0x0001,
 	TPM_ALG_SHA1		= 0x0004,
 	TPM_ALG_AES		= 0x0006,
 	TPM_ALG_KEYEDHASH	= 0x0008,
@@ -463,6 +470,9 @@ enum tpm_algorithms {
 	TPM_ALG_SHA512		= 0x000D,
 	TPM_ALG_NULL		= 0x0010,
 	TPM_ALG_SM3_256		= 0x0012,
+	TPM_ALG_RSASSA		= 0x0014,
+	TPM_ALG_RSAES		= 0x0015,
+	TPM_ALG_ECDSA		= 0x0018,
 	TPM_ALG_ECC		= 0x0023,
 	TPM_ALG_CFB		= 0x0043,
 };
