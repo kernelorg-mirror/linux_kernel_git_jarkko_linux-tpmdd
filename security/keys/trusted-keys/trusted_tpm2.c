@@ -260,7 +260,7 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 	if (rc)
 		return rc;
 
-	rc = tpm2_start_auth_session(chip);
+	rc = tpm2_start_auth_session(chip, false);
 	if (rc)
 		goto out_put;
 
@@ -439,7 +439,7 @@ static int tpm2_load_cmd(struct tpm_chip *chip,
 	if (blob_len > payload->blob_len)
 		return -E2BIG;
 
-	rc = tpm2_start_auth_session(chip);
+	rc = tpm2_start_auth_session(chip, false);
 	if (rc)
 		return rc;
 
@@ -504,7 +504,7 @@ static int tpm2_unseal_cmd(struct tpm_chip *chip,
 	u8 *data;
 	int rc;
 
-	rc = tpm2_start_auth_session(chip);
+	rc = tpm2_start_auth_session(chip, false);
 	if (rc)
 		return rc;
 
