@@ -116,7 +116,9 @@ bool hibernation_available(void)
 	return nohibernate == 0 &&
 		!security_locked_down(LOCKDOWN_HIBERNATION) &&
 		!secretmem_active() && !cxl_mem_active() &&
-		arch_hibernation_available();
+		arch_hibernation_available() &&
+		(!IS_ENABLED(CONFIG_HIBERNATION_TPM_SIGNATURE) ||
+		 hibernate_tpm_available());
 }
 
 /**
