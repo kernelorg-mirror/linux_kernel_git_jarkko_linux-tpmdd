@@ -113,12 +113,20 @@ __weak bool arch_hibernation_available(void)
 
 bool hibernation_available(void)
 {
-	return nohibernate == 0 &&
-		!security_locked_down(LOCKDOWN_HIBERNATION) &&
-		!secretmem_active() && !cxl_mem_active() &&
-		arch_hibernation_available() &&
-		(!IS_ENABLED(CONFIG_HIBERNATION_TPM_SIGNATURE) ||
-		 hibernate_tpm_available());
+	if (nohibernate || secretmem_active() || cxl_mem_active() ||
+	    !arch_hibernation_available())
+		return false;
+
+	/*
+	 * Only images signed by the kernel are restored, so hibernation does
+	 * not undermine the integrity of a locked down kernel.  Images are
+	 * not encrypted, though, so they would expose kernel memory.
+	 */
+	if (IS_ENABLED(CONFIG_HIBERNATION_TPM_SIGNATURE))
+		return hibernate_tpm_available() &&
+		       !security_locked_down(LOCKDOWN_HIBERNATION_IMAGE);
+
+	return !security_locked_down(LOCKDOWN_HIBERNATION);
 }
 
 /**
