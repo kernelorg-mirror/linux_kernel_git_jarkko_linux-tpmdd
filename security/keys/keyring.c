@@ -1755,6 +1755,8 @@ do_gc:
 	down_write(&keyring->sem);
 	assoc_array_gc(&keyring->keys, &keyring_assoc_array_ops,
 		       keyring_gc_select_iterator, &limit);
+	key_payload_reserve(keyring,
+			    keyring->keys.nr_leaves_on_tree * KEYQUOTA_LINK_BYTES);
 	up_write(&keyring->sem);
 	kleave(" [gc]");
 }
