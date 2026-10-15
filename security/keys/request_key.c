@@ -372,7 +372,7 @@ static int construct_alloc_key(struct keyring_search_context *ctx,
 			       struct key_user *user,
 			       struct key **_key)
 {
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_link *edit = NULL;
 	struct key *key;
 	key_perm_t perm;
 	key_ref_t key_ref;

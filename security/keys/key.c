@@ -443,7 +443,7 @@ static int __key_instantiate_and_link(struct key *key,
 				      struct key_preparsed_payload *prep,
 				      struct key *keyring,
 				      struct key *authkey,
-				      struct assoc_array_edit **_edit)
+				      struct keyring_link **_edit)
 {
 	int ret, awaken;
 
@@ -518,7 +518,7 @@ int key_instantiate_and_link(struct key *key,
 			     struct key *authkey)
 {
 	struct key_preparsed_payload prep;
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_link *edit = NULL;
 	int ret;
 
 	memset(&prep, 0, sizeof(prep));
@@ -593,7 +593,7 @@ int key_reject_and_link(struct key *key,
 			struct key *keyring,
 			struct key *authkey)
 {
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_link *edit = NULL;
 	int ret, awaken, link_ret = 0;
 
 	key_check(key);
@@ -838,7 +838,7 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 		.description	= description,
 	};
 	struct key_preparsed_payload prep;
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_link *edit = NULL;
 	const struct cred *cred = current_cred();
 	struct key *keyring, *key = NULL;
 	key_ref_t key_ref;
