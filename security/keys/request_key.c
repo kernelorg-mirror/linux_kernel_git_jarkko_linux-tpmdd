@@ -372,7 +372,7 @@ static int construct_alloc_key(struct keyring_search_context *ctx,
 			       struct key_user *user,
 			       struct key **_key)
 {
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_link *edit[2] = {};
 	struct key *key;
 	key_perm_t perm;
 	key_ref_t key_ref;
@@ -425,10 +425,10 @@ static int construct_alloc_key(struct keyring_search_context *ctx,
 		goto key_already_present;
 
 	if (dest_keyring) {
-		ret = __key_link_begin(dest_keyring, &key->index_key, &edit);
+		ret = __key_link_begin(dest_keyring, &key->index_key, edit);
 		if (ret < 0)
 			goto link_alloc_failed;
-		__key_link(dest_keyring, key, &edit);
+		__key_link(dest_keyring, key, edit);
 	}
 
 	mutex_unlock(&key_construction_mutex);
@@ -446,12 +446,12 @@ key_already_present:
 	mutex_unlock(&key_construction_mutex);
 	key = key_ref_to_ptr(key_ref);
 	if (dest_keyring) {
-		ret = __key_link_begin(dest_keyring, &key->index_key, &edit);
+		ret = __key_link_begin(dest_keyring, &key->index_key, edit);
 		if (ret < 0)
 			goto link_alloc_failed_unlocked;
 		ret = __key_link_check_live_key(dest_keyring, key);
 		if (ret == 0)
-			__key_link(dest_keyring, key, &edit);
+			__key_link(dest_keyring, key, edit);
 		__key_link_end(dest_keyring, &key->index_key, edit);
 		if (ret < 0)
 			goto link_check_failed;

@@ -430,7 +430,7 @@ static int __key_instantiate_and_link(struct key *key,
 				      struct key_preparsed_payload *prep,
 				      struct key *keyring,
 				      struct key *authkey,
-				      struct assoc_array_edit **_edit)
+				      struct keyring_link *_edit[2])
 {
 	int ret, awaken;
 
@@ -505,7 +505,7 @@ int key_instantiate_and_link(struct key *key,
 			     struct key *authkey)
 {
 	struct key_preparsed_payload prep;
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_link *edit[2] = {};
 	int ret;
 
 	memset(&prep, 0, sizeof(prep));
@@ -525,7 +525,7 @@ int key_instantiate_and_link(struct key *key,
 		if (ret < 0)
 			goto error;
 
-		ret = __key_link_begin(keyring, &key->index_key, &edit);
+		ret = __key_link_begin(keyring, &key->index_key, edit);
 		if (ret < 0)
 			goto error_link_end;
 
@@ -539,7 +539,7 @@ int key_instantiate_and_link(struct key *key,
 		}
 	}
 
-	ret = __key_instantiate_and_link(key, &prep, keyring, authkey, &edit);
+	ret = __key_instantiate_and_link(key, &prep, keyring, authkey, edit);
 
 error_link_end:
 	if (keyring)
@@ -580,7 +580,7 @@ int key_reject_and_link(struct key *key,
 			struct key *keyring,
 			struct key *authkey)
 {
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_link *edit[2] = {};
 	int ret, awaken, link_ret = 0;
 
 	key_check(key);
@@ -602,7 +602,7 @@ int key_reject_and_link(struct key *key,
 				__key_link_end(keyring, &key->index_key, edit);
 				return -EPERM;
 			}
-			link_ret = __key_link_begin(keyring, &key->index_key, &edit);
+			link_ret = __key_link_begin(keyring, &key->index_key, edit);
 			if (link_ret < 0)
 				__key_link_end(keyring, &key->index_key, edit);
 		}
@@ -625,7 +625,7 @@ int key_reject_and_link(struct key *key,
 
 		/* and link it into the destination keyring */
 		if (keyring && link_ret == 0)
-			__key_link(keyring, key, &edit);
+			__key_link(keyring, key, edit);
 
 		/* disable the authorisation key */
 		if (authkey)
@@ -825,7 +825,7 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 		.description	= description,
 	};
 	struct key_preparsed_payload prep;
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_link *edit[2] = {};
 	const struct cred *cred = current_cred();
 	struct key *keyring, *key = NULL;
 	key_ref_t key_ref;
@@ -886,7 +886,7 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 		goto error_free_prep;
 	}
 
-	ret = __key_link_begin(keyring, &index_key, &edit);
+	ret = __key_link_begin(keyring, &index_key, edit);
 	if (ret < 0) {
 		key_ref = ERR_PTR(ret);
 		goto error_link_end;
@@ -953,7 +953,7 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 	}
 
 	/* instantiate it and link it into the target keyring */
-	ret = __key_instantiate_and_link(key, &prep, keyring, NULL, &edit);
+	ret = __key_instantiate_and_link(key, &prep, keyring, NULL, edit);
 	if (ret < 0) {
 		key_put(key);
 		key_ref = ERR_PTR(ret);
