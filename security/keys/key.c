@@ -381,10 +381,15 @@ EXPORT_SYMBOL(key_alloc);
  */
 int key_payload_reserve(struct key *key, size_t datalen)
 {
-	int delta = (int)datalen - key->datalen;
+	int delta;
 	int ret = 0;
 
 	key_check(key);
+
+	if (datalen > INT_MAX)
+		return -EINVAL;
+
+	delta = (int)datalen - (int)key->datalen;
 
 	/* contemplate the quota adjustment */
 	if (delta != 0 && test_bit(KEY_FLAG_IN_QUOTA, &key->flags)) {
@@ -395,8 +400,10 @@ int key_payload_reserve(struct key *key, size_t datalen)
 		spin_lock_irqsave(&key->user->lock, flags);
 
 		if (delta > 0 &&
-		    (key->user->qnbytes + delta > maxbytes ||
-		     key->user->qnbytes + delta < key->user->qnbytes)) {
+		    (delta > INT_MAX - key->user->qnbytes ||
+		     delta > INT_MAX - key->quotalen ||
+		     delta > maxbytes ||
+		     key->user->qnbytes > maxbytes - delta)) {
 			ret = -EDQUOT;
 		}
 		else {
