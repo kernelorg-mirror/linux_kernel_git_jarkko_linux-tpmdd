@@ -245,6 +245,10 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 	}
 
 	desclen = strlen(desc);
+	if (desclen >= INT_MAX || type->def_datalen > INT_MAX - desclen - 1) {
+		key = ERR_PTR(-EINVAL);
+		goto error;
+	}
 	quotalen = desclen + 1 + type->def_datalen;
 
 	/* get hold of the key tracking for this user */
@@ -261,10 +265,14 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 			key_quota_root_maxbytes : key_quota_maxbytes;
 
 		spin_lock_irqsave(&user->lock, irqflags);
+		if (user->qnkeys == INT_MAX ||
+		    quotalen > INT_MAX - user->qnbytes)
+			goto no_quota;
+
 		if (!(flags & KEY_ALLOC_QUOTA_OVERRUN)) {
 			if (user->qnkeys + 1 > maxkeys ||
-			    user->qnbytes + quotalen > maxbytes ||
-			    user->qnbytes + quotalen < user->qnbytes)
+			    quotalen > maxbytes ||
+			    user->qnbytes > maxbytes - quotalen)
 				goto no_quota;
 		}
 
