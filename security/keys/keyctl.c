@@ -1014,10 +1014,11 @@ long keyctl_chown_key(key_serial_t id, uid_t user, gid_t group)
 				key_quota_root_maxbytes : key_quota_maxbytes;
 
 			spin_lock_irqsave(&newowner->lock, flags);
-			if (newowner->qnkeys + 1 > maxkeys ||
-			    newowner->qnbytes + key->quotalen > maxbytes ||
-			    newowner->qnbytes + key->quotalen <
-			    newowner->qnbytes)
+			if (newowner->qnkeys == INT_MAX ||
+			    newowner->qnkeys + 1 > maxkeys ||
+			    key->quotalen > INT_MAX - newowner->qnbytes ||
+			    key->quotalen > maxbytes ||
+			    newowner->qnbytes > maxbytes - key->quotalen)
 				goto quota_overrun;
 
 			newowner->qnkeys++;
