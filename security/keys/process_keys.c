@@ -633,7 +633,8 @@ void key_register_fs_verity_keyring(struct key *keyring)
  * to a key or the best found key was a negative key; -EKEYREVOKED or
  * -EKEYEXPIRED if the best found key was revoked or expired; -EACCES if the
  * found key doesn't grant the requested permit or the LSM denied access to it;
- * or -ENOMEM if a special keyring couldn't be created.
+ * -ENOMEM if a special keyring couldn't be created; or -EPERM if KEY_LOOKUP_CREATE
+ * is requested while credentials are overridden.
  *
  * In the case of a successful return, the possession attribute is set on the
  * returned key reference.
@@ -651,6 +652,9 @@ key_ref_t lookup_user_key(key_serial_t id, unsigned long lflags,
 	struct key *key, *user_session;
 	key_ref_t key_ref, skey_ref;
 	int ret;
+
+	if ((lflags & KEY_LOOKUP_CREATE) && current_cred() != current_real_cred())
+		return ERR_PTR(-EPERM);
 
 try_again:
 	ctx.cred = get_current_cred();
