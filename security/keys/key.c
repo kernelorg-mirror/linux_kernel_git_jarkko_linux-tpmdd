@@ -1294,18 +1294,14 @@ EXPORT_SYMBOL(__register_key_type);
  * unregister_key_type - Unregister a type of key.
  * @ktype: The key type.
  *
- * Unregister a key type and mark all the extant keys of this type as dead.
- * Those keys of this type are then destroyed to get rid of their payloads and
- * they and their links will be garbage collected as soon as possible.
+ * Unregister a key type.
  */
 void unregister_key_type(struct key_type *ktype)
 {
 	down_write(&key_types_sem);
 	list_del_init(&ktype->link);
-	downgrade_write(&key_types_sem);
-	key_gc_keytype(ktype);
 	pr_notice("Key type %s unregistered\n", ktype->name);
-	up_read(&key_types_sem);
+	up_write(&key_types_sem);
 }
 EXPORT_SYMBOL(unregister_key_type);
 
@@ -1324,7 +1320,6 @@ void __init key_init(void)
 
 	/* add the special key types */
 	list_add_tail(&key_type_keyring.link, &key_types_list);
-	list_add_tail(&key_type_dead.link, &key_types_list);
 	list_add_tail(&key_type_user.link, &key_types_list);
 	list_add_tail(&key_type_logon.link, &key_types_list);
 
