@@ -19,7 +19,6 @@
 #include <linux/compat.h>
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
-#include <linux/srcu.h>
 
 struct iovec;
 struct keyring_link;
@@ -45,7 +44,6 @@ struct keyring_edit {
 	no_printk(KERN_DEBUG FMT"\n", ##__VA_ARGS__)
 #endif
 
-extern struct key_type key_type_dead;
 extern struct key_type key_type_user;
 extern struct key_type key_type_logon;
 
@@ -93,7 +91,6 @@ extern struct kmem_cache *key_jar;
 extern struct rb_root key_serial_tree;
 extern spinlock_t key_serial_lock;
 extern struct mutex key_construction_mutex;
-extern struct srcu_struct key_type_srcu;
 extern wait_queue_head_t request_key_conswq;
 
 extern void key_set_index_key(struct keyring_index_key *index_key);
@@ -174,12 +171,9 @@ extern struct work_struct key_gc_work;
 extern unsigned key_gc_delay;
 extern struct workqueue_struct *key_gc_wq;
 extern void keyring_gc(struct key *keyring, time64_t limit);
-extern void keyring_restriction_gc(struct key *keyring,
-				   struct key_type *dead_type);
 void key_set_expiry(struct key *key, time64_t expiry);
 extern void key_schedule_gc(time64_t gc_at);
 extern void key_schedule_gc_links(void);
-extern void key_gc_keytype(struct key_type *ktype);
 
 extern int key_task_permission(const key_ref_t key_ref,
 			       const struct cred *cred,
