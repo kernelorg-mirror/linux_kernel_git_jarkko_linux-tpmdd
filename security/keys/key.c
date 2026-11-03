@@ -670,7 +670,7 @@ void key_put(struct key *key)
 			}
 			/* Mark key as safe for GC after key->user done. */
 			clear_bit_unlock(KEY_FLAG_USER_ALIVE, &key->flags);
-			schedule_work(&key_gc_work);
+			queue_work(key_gc_wq, &key_gc_work);
 		}
 	}
 }
@@ -1293,6 +1293,10 @@ void __init key_init(void)
 	/* allocate a slab in which we can store keys */
 	key_jar = kmem_cache_create("key_jar", sizeof(struct key),
 			0, SLAB_HWCACHE_ALIGN | SLAB_PANIC | SLAB_NO_MERGE, NULL);
+
+	key_gc_wq = alloc_workqueue("key_gc", WQ_MEM_RECLAIM | WQ_PERCPU, 0);
+	if (!key_gc_wq)
+		panic("Cannot create key_gc workqueue\n");
 
 	/* add the special key types */
 	list_add_tail(&key_type_keyring.link, &key_types_list);
