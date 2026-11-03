@@ -10,9 +10,11 @@
 
 #include <linux/key.h>
 #include <linux/errno.h>
+#include <linux/init.h>
 
 #ifdef CONFIG_KEYS
 
+struct module;
 struct kernel_pkey_query;
 struct kernel_pkey_params;
 
@@ -161,6 +163,7 @@ struct key_type {
 				     const void *in, const void *in2);
 
 	/* internal fields */
+	struct module		*owner;
 	atomic64_t		index_id;	/* Opaque keyring index ID */
 	struct list_head	link;		/* link in types list */
 	struct lock_class_key	lock_class;	/* key->sem lock class */
@@ -168,7 +171,8 @@ struct key_type {
 
 extern struct key_type key_type_keyring;
 
-extern int register_key_type(struct key_type *ktype);
+int __register_key_type(struct key_type *ktype, struct module *owner);
+#define register_key_type(ktype) __register_key_type(ktype, THIS_MODULE)
 extern void unregister_key_type(struct key_type *ktype);
 
 extern int key_payload_reserve(struct key *key, size_t datalen);
