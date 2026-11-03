@@ -6,6 +6,7 @@
  */
 
 #include <linux/slab.h>
+#include <linux/module.h>
 #include <linux/security.h>
 #include <keys/keyring-type.h>
 #include "internal.h"
@@ -150,6 +151,7 @@ static noinline void key_gc_unused_keys(struct list_head *keys)
 	while (!list_empty(keys)) {
 		struct key *key =
 			list_entry(keys->next, struct key, graveyard_link);
+		struct module *owner = key->type->owner;
 		short state = key->state;
 
 		list_del(&key->graveyard_link);
@@ -163,8 +165,15 @@ static noinline void key_gc_unused_keys(struct list_head *keys)
 #endif
 
 		/* Throw away the key data if the key is instantiated */
-		if (state == KEY_IS_POSITIVE && key->type->destroy)
-			key->type->destroy(key);
+		if (state == KEY_IS_POSITIVE) {
+			if (key->type->destroy)
+				key->type->destroy(key);
+		} else if (key->restrict_link) {
+			if (key->restrict_link->keytype)
+				module_put(key->restrict_link->keytype->owner);
+			key_put(key->restrict_link->key);
+			kfree(key->restrict_link);
+		}
 
 		security_key_free(key);
 
@@ -178,6 +187,7 @@ static noinline void key_gc_unused_keys(struct list_head *keys)
 
 		memzero_explicit(key, sizeof(*key));
 		kmem_cache_free(key_jar, key);
+		module_put(owner);
 	}
 }
 

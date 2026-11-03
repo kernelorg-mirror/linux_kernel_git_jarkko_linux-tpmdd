@@ -7,6 +7,7 @@
 
 #include <linux/export.h>
 #include <linux/init.h>
+#include <linux/module.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/security.h>
@@ -436,6 +437,9 @@ static void keyring_destroy(struct key *keyring)
 	if (keyring->restrict_link) {
 		struct key_restriction *keyres = keyring->restrict_link;
 
+		if (keyres->keytype)
+			module_put(keyres->keytype->owner);
+
 		key_put(keyres->key);
 		kfree(keyres);
 	}
@@ -540,6 +544,9 @@ struct key *keyring_alloc(const char *description, kuid_t uid, kgid_t gid,
 	if (!IS_ERR(keyring)) {
 		ret = key_instantiate_and_link(keyring, NULL, 0, dest, NULL);
 		if (ret < 0) {
+			if (restrict_link && restrict_link->keytype)
+				module_put(restrict_link->keytype->owner);
+			keyring->restrict_link = NULL;
 			key_put(keyring);
 			keyring = ERR_PTR(ret);
 		}
@@ -1062,7 +1069,7 @@ int keyring_restrict(key_ref_t keyring_ref, const char *type,
 
 		if (!restrict_type->lookup_restriction) {
 			ret = -ENOENT;
-			goto error;
+			goto out;
 		}
 
 		restrict_link = restrict_type->lookup_restriction(restriction);
@@ -1070,7 +1077,15 @@ int keyring_restrict(key_ref_t keyring_ref, const char *type,
 
 	if (IS_ERR(restrict_link)) {
 		ret = PTR_ERR(restrict_link);
-		goto error;
+		goto out;
+	}
+
+	if (restrict_link && restrict_link->keytype &&
+	    ((restrict_link->keytype->owner &&
+	      module_is_coming(restrict_link->keytype->owner)) ||
+	     !try_module_get(restrict_link->keytype->owner))) {
+		ret = -ENOENT;
+		goto out_free_restriction;
 	}
 
 	down_write(&keyring->sem);
@@ -1088,12 +1103,21 @@ int keyring_restrict(key_ref_t keyring_ref, const char *type,
 	up_write(&keyring_serialise_restrict_sem);
 	up_write(&keyring->sem);
 
-	if (ret < 0) {
-		key_put(restrict_link->key);
-		kfree(restrict_link);
-	}
+	if (ret < 0)
+		goto out_put_module;
 
-error:
+	goto out;
+
+out_put_module:
+	if (restrict_link && restrict_link->keytype)
+		module_put(restrict_link->keytype->owner);
+
+out_free_restriction:
+	if (restrict_link)
+		key_put(restrict_link->key);
+	kfree(restrict_link);
+
+out:
 	if (restrict_type)
 		key_type_put(restrict_type);
 
