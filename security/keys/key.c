@@ -7,6 +7,7 @@
 
 #include <linux/export.h>
 #include <linux/init.h>
+#include <linux/module.h>
 #include <linux/poison.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -234,19 +235,34 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 
 	key = ERR_PTR(-EINVAL);
 	if (!desc || !*desc)
-		goto error;
+		goto out;
+
+	/* Failed module initialization ignores outstanding module references. */
+	if ((type->owner && module_is_coming(type->owner)) ||
+	    !try_module_get(type->owner)) {
+		key = ERR_PTR(-ENOENT);
+		goto out;
+	}
+
+	if (restrict_link && restrict_link->keytype &&
+	    ((restrict_link->keytype->owner &&
+	      module_is_coming(restrict_link->keytype->owner)) ||
+	     !try_module_get(restrict_link->keytype->owner))) {
+		key = ERR_PTR(-ENOENT);
+		goto out_put_module;
+	}
 
 	if (type->vet_description) {
 		ret = type->vet_description(desc);
 		if (ret < 0) {
 			key = ERR_PTR(ret);
-			goto error;
+			goto out_put_restrict_module;
 		}
 	}
 
 	desclen = strlen(desc);
 	if (desclen >= KEY_MAX_DESC_SIZE)
-		goto error;
+		goto out_put_restrict_module;
 	quotalen = desclen + 1 + type->def_datalen;
 
 	/* get hold of the key tracking for this user */
@@ -323,8 +339,6 @@ struct key *key_alloc(struct key_type *type, const char *desc,
 	refcount_inc(&key->domain_tag->usage);
 	atomic_inc(&user->nkeys);
 	key_alloc_serial(key);
-
-error:
 	return key;
 
 security_error:
@@ -338,7 +352,7 @@ security_error:
 	}
 	key_user_put(user);
 	key = ERR_PTR(ret);
-	goto error;
+	goto out_put_restrict_module;
 
 no_memory_3:
 	kmem_cache_free(key_jar, key);
@@ -352,13 +366,22 @@ no_memory_2:
 	key_user_put(user);
 no_memory_1:
 	key = ERR_PTR(-ENOMEM);
-	goto error;
+	goto out_put_restrict_module;
 
 no_quota:
 	spin_unlock_irqrestore(&user->lock, irqflags);
 	key_user_put(user);
 	key = ERR_PTR(-EDQUOT);
-	goto error;
+
+out_put_restrict_module:
+	if (restrict_link && restrict_link->keytype)
+		module_put(restrict_link->keytype->owner);
+
+out_put_module:
+	module_put(type->owner);
+
+out:
+	return key;
 }
 EXPORT_SYMBOL(key_alloc);
 
@@ -1231,19 +1254,20 @@ int generic_key_instantiate(struct key *key, struct key_preparsed_payload *prep)
 EXPORT_SYMBOL(generic_key_instantiate);
 
 /**
- * register_key_type - Register a type of key.
+ * __register_key_type - Register a type of key.
  * @ktype: The new key type.
+ * @owner: Module owning the key type.
  *
  * Register a new key type.
  *
  * Returns 0 on success or -EEXIST if a type of this name already exists.
  */
-int register_key_type(struct key_type *ktype)
+int __register_key_type(struct key_type *ktype, struct module *owner)
 {
 	struct key_type *p;
 	int ret;
 
-	memset(&ktype->lock_class, 0, sizeof(ktype->lock_class));
+	ktype->owner = owner;
 
 	ret = -EEXIST;
 	down_write(&key_types_sem);
@@ -1264,7 +1288,7 @@ out:
 	up_write(&key_types_sem);
 	return ret;
 }
-EXPORT_SYMBOL(register_key_type);
+EXPORT_SYMBOL(__register_key_type);
 
 /**
  * unregister_key_type - Unregister a type of key.
