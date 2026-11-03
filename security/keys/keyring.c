@@ -178,7 +178,7 @@ static void keyring_index_free(struct key *keyring)
 
 	rcu_assign_pointer(keyring->index, NULL);
 	/* rhashtable_destroy() may sleep, so defer via rcu_work. */
-	queue_rcu_work(system_dfl_wq, &index->rcu_work);
+	queue_rcu_work(key_gc_wq, &index->rcu_work);
 }
 
 static DEFINE_RWLOCK(keyring_name_lock);
