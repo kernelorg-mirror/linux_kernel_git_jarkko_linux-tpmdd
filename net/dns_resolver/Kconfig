@@ -1,10 +1,25 @@
 # SPDX-License-Identifier: GPL-2.0-only
+
+#
+# Configuration for DNS Resolver key type
+#
+config DNS_KEY
+	tristate "DNS Resolver key type"
+	depends on KEYS
+	help
+	  Support the key type used to cache DNS lookups independently of
+	  the in-kernel DNS query service.
+
+	  To compile this as a module, choose M here: the module is called
+	  dns_resolver_key.
+
 #
 # Configuration for DNS Resolver
 #
 config DNS_RESOLVER
 	tristate "DNS Resolver support"
 	depends on KEYS
+	select DNS_KEY
 	help
 	  Saying Y here will include support for the DNS Resolver key type
 	  which can be used to make upcalls to perform DNS lookups in
