@@ -19,11 +19,6 @@ enum {
 };
 
 /*
- * dns_key.c
- */
-extern const struct cred *dns_resolver_cache;
-
-/*
  * debug tracing
  */
 extern unsigned int dns_resolver_debug;
