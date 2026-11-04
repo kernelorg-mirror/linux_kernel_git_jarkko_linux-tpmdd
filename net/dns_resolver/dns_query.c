@@ -24,8 +24,10 @@
  */
 
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/slab.h>
 #include <linux/cred.h>
+#include <linux/keyctl.h>
 #include <linux/dns_resolver.h>
 #include <linux/err.h>
 #include <net/net_namespace.h>
@@ -34,6 +36,8 @@
 #include <keys/user-type.h>
 
 #include "internal.h"
+
+static const struct cred *dns_resolver_cache;
 
 /**
  * dns_query - Query the DNS
@@ -137,3 +141,63 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL(dns_query);
+
+static int __init init_dns_resolver(void)
+{
+	struct cred *cred;
+	struct key *keyring;
+	int ret;
+
+	/*
+	 * Create an override credential set with a special thread keyring in
+	 * which DNS requests are cached.  This prevents malicious redirections
+	 * from being installed with add_key().
+	 */
+	cred = prepare_kernel_cred(&init_task);
+	if (!cred)
+		return -ENOMEM;
+
+	keyring = keyring_alloc(".dns_resolver",
+				GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, cred,
+				(KEY_POS_ALL & ~KEY_POS_SETATTR) |
+				KEY_USR_VIEW | KEY_USR_READ,
+				KEY_ALLOC_NOT_IN_QUOTA, NULL, NULL);
+	if (IS_ERR(keyring)) {
+		ret = PTR_ERR(keyring);
+		goto failed_put_cred;
+	}
+
+	/*
+	 * Instruct request_key() to use this special keyring as a cache for
+	 * the results it looks up.
+	 */
+	set_bit(KEY_FLAG_ROOT_CAN_CLEAR, &keyring->flags);
+	cred->thread_keyring = keyring;
+	cred->jit_keyring = KEY_REQKEY_DEFL_THREAD_KEYRING;
+	dns_resolver_cache = cred;
+
+	kdebug("DNS resolver keyring: %d\n", key_serial(keyring));
+	return 0;
+
+failed_put_cred:
+	put_cred(cred);
+	return ret;
+}
+
+static void __exit exit_dns_resolver(void)
+{
+	key_revoke(dns_resolver_cache->thread_keyring);
+	put_cred(dns_resolver_cache);
+	/* Drain deferred credential and keyring destruction. */
+	key_gc_flush();
+}
+
+module_init(init_dns_resolver);
+module_exit(exit_dns_resolver);
+
+MODULE_DESCRIPTION("DNS Resolver");
+MODULE_AUTHOR("Wang Lei");
+MODULE_LICENSE("GPL");
+
+module_param_named(debug, dns_resolver_debug, uint, 0644);
+MODULE_PARM_DESC(debug, "DNS Resolver debugging mask");
