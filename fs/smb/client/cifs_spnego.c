@@ -15,6 +15,7 @@
 #include <linux/key-type.h>
 #include <linux/keyctl.h>
 #include <linux/inet.h>
+#include <linux/ratelimit.h>
 #include "cifsglob.h"
 #include "cifs_spnego.h"
 #include "cifs_debug.h"
@@ -188,6 +189,17 @@ cifs_get_spnego_key(struct cifs_ses *sesInfo,
 out:
 	kfree(description);
 	return spnego_key;
+}
+
+void
+cifs_spnego_clear_cache(void)
+{
+	int ret;
+
+	ret = keyring_clear(spnego_cred->thread_keyring);
+	if (ret)
+		pr_warn_ratelimited("Failed to clear SPNEGO cache: %d; cache pins remain\n",
+				    ret);
 }
 
 int
