@@ -13,6 +13,7 @@
 #include <linux/string.h>
 #include <linux/keyctl.h>
 #include <linux/key-type.h>
+#include <linux/ratelimit.h>
 #include <uapi/linux/posix_acl.h>
 #include <linux/posix_acl.h>
 #include <linux/posix_acl_xattr.h>
@@ -537,6 +538,17 @@ got_valid_id:
 		fattr->cf_gid = fgid;
 
 	return 0;
+}
+
+void
+cifs_idmap_clear_cache(void)
+{
+	int ret;
+
+	ret = keyring_clear(root_cred->thread_keyring);
+	if (ret)
+		pr_warn_ratelimited("Failed to clear idmap cache: %d; cache pins remain\n",
+				    ret);
 }
 
 int
