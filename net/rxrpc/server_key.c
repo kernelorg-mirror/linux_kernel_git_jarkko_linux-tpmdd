@@ -9,6 +9,11 @@
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define RXRPC_KEY_PROVIDER
+
+#include <crypto/des.h>
+#include <crypto/krb5.h>
+#include <linux/fips.h>
 
 #include <linux/module.h>
 #include <linux/net.h>
@@ -42,6 +47,7 @@ struct key_type key_type_rxrpc_s = {
 	.destroy	= rxrpc_destroy_s,
 	.describe	= rxrpc_describe_s,
 };
+EXPORT_SYMBOL(key_type_rxrpc_s);
 
 /*
  * Vet the description for an RxRPC server key.
@@ -60,12 +66,124 @@ static int rxrpc_vet_description_s(const char *desc)
 	return 0;
 }
 
+#ifdef CONFIG_RXKAD
+/*
+ * Parse the information from a server key
+ *
+ * The data should be the 8-byte secret key.
+ */
+static int rxkad_preparse_server_key(struct key_preparsed_payload *prep)
+{
+	struct des_ctx *des_key;
+	int err;
+
+	if (fips_enabled)
+		return -ENOPKG;
+
+	if (prep->datalen != 8)
+		return -EINVAL;
+
+	memcpy(&prep->payload.data[2], prep->data, 8);
+
+	des_key = kmalloc_obj(*des_key);
+	if (!des_key) {
+		_leave(" = -ENOMEM");
+		return -ENOMEM;
+	}
+
+	err = des_expand_key(des_key, prep->data, 8);
+	if (err) {
+		kfree_sensitive(des_key);
+		_leave(" = %d", err);
+		return err;
+	}
+
+	prep->payload.data[0] = des_key;
+	_leave(" = 0");
+	return 0;
+}
+
+static void rxkad_free_preparse_server_key(struct key_preparsed_payload *prep)
+{
+	kfree_sensitive(prep->payload.data[0]);
+}
+
+static void rxkad_destroy_server_key(struct key *key)
+{
+	kfree_sensitive(key->payload.data[0]);
+	key->payload.data[0] = NULL;
+}
+#endif
+
+#ifdef CONFIG_RXGK
+/*
+ * Parse the information from a server key
+ */
+static int rxgk_preparse_server_key(struct key_preparsed_payload *prep)
+{
+	const struct krb5_enctype *krb5;
+	struct krb5_buffer *server_key = (void *)&prep->payload.data[2];
+	unsigned int service, sec_class, kvno, enctype;
+	int n = 0;
+
+	_enter("%zu", prep->datalen);
+
+	if (sscanf(prep->orig_description, "%u:%u:%u:%u%n",
+		   &service, &sec_class, &kvno, &enctype, &n) != 4)
+		return -EINVAL;
+
+	if (prep->orig_description[n])
+		return -EINVAL;
+
+	krb5 = crypto_krb5_find_enctype(enctype);
+	if (!krb5)
+		return -ENOPKG;
+
+	prep->payload.data[0] = (struct krb5_enctype *)krb5;
+
+	if (prep->datalen != krb5->key_len)
+		return -EKEYREJECTED;
+
+	server_key->len = prep->datalen;
+	server_key->data = kmemdup(prep->data, prep->datalen, GFP_KERNEL);
+	if (!server_key->data)
+		return -ENOMEM;
+
+	_leave(" = 0");
+	return 0;
+}
+
+static void rxgk_free_server_key(union key_payload *payload)
+{
+	struct krb5_buffer *server_key = (void *)&payload->data[2];
+
+	kfree_sensitive(server_key->data);
+}
+
+static void rxgk_free_preparse_server_key(struct key_preparsed_payload *prep)
+{
+	rxgk_free_server_key(&prep->payload);
+}
+
+static void rxgk_destroy_server_key(struct key *key)
+{
+	rxgk_free_server_key(&key->payload);
+}
+
+static void rxgk_describe_server_key(const struct key *key, struct seq_file *m)
+{
+	const struct krb5_enctype *krb5 = key->payload.data[0];
+
+	if (krb5)
+		seq_printf(m, ": %s", krb5->name);
+}
+#endif
+
 /*
  * Preparse a server secret key.
  */
 static int rxrpc_preparse_s(struct key_preparsed_payload *prep)
 {
-	const struct rxrpc_security *sec;
 	unsigned int service, sec_class;
 	int n;
 
@@ -77,139 +195,69 @@ static int rxrpc_preparse_s(struct key_preparsed_payload *prep)
 	if (sscanf(prep->orig_description, "%u:%u%n", &service, &sec_class, &n) != 2)
 		return -EINVAL;
 
-	sec = rxrpc_security_lookup(sec_class);
-	if (!sec)
+	prep->payload.data[1] = (void *)(uintptr_t)sec_class;
+
+	switch (sec_class) {
+#ifdef CONFIG_RXKAD
+	case RXRPC_SECURITY_RXKAD:
+		return rxkad_preparse_server_key(prep);
+#endif
+#ifdef CONFIG_RXGK
+	case RXRPC_SECURITY_YFS_RXGK:
+		return rxgk_preparse_server_key(prep);
+#endif
+	default:
 		return -ENOPKG;
-
-	prep->payload.data[1] = (struct rxrpc_security *)sec;
-
-	if (!sec->preparse_server_key)
-		return -EINVAL;
-
-	return sec->preparse_server_key(prep);
+	}
 }
 
 static void rxrpc_free_preparse_s(struct key_preparsed_payload *prep)
 {
-	const struct rxrpc_security *sec = prep->payload.data[1];
-
-	if (sec && sec->free_preparse_server_key)
-		sec->free_preparse_server_key(prep);
+	switch ((uintptr_t)prep->payload.data[1]) {
+#ifdef CONFIG_RXKAD
+	case RXRPC_SECURITY_RXKAD:
+		rxkad_free_preparse_server_key(prep);
+		break;
+#endif
+#ifdef CONFIG_RXGK
+	case RXRPC_SECURITY_YFS_RXGK:
+		rxgk_free_preparse_server_key(prep);
+		break;
+#endif
+	default:
+		break;
+	}
 }
 
 static void rxrpc_destroy_s(struct key *key)
 {
-	const struct rxrpc_security *sec = key->payload.data[1];
-
-	if (sec && sec->destroy_server_key)
-		sec->destroy_server_key(key);
+	switch ((uintptr_t)key->payload.data[1]) {
+#ifdef CONFIG_RXKAD
+	case RXRPC_SECURITY_RXKAD:
+		rxkad_destroy_server_key(key);
+		break;
+#endif
+#ifdef CONFIG_RXGK
+	case RXRPC_SECURITY_YFS_RXGK:
+		rxgk_destroy_server_key(key);
+		break;
+#endif
+	default:
+		break;
+	}
 }
 
 static void rxrpc_describe_s(const struct key *key, struct seq_file *m)
 {
-	const struct rxrpc_security *sec = key->payload.data[1];
-
 	seq_puts(m, key->description);
-	if (sec && sec->describe_server_key)
-		sec->describe_server_key(key, m);
-}
 
-/*
- * grab the security keyring for a server socket
- */
-int rxrpc_server_keyring(struct rxrpc_sock *rx, sockptr_t optval, int optlen)
-{
-	struct key *key;
-	char *description;
-
-	_enter("");
-
-	if (rx->securities)
-		return -EINVAL;
-
-	if (optlen <= 0 || optlen > PAGE_SIZE - 1)
-		return -EINVAL;
-
-	description = memdup_sockptr_nul(optval, optlen);
-	if (IS_ERR(description))
-		return PTR_ERR(description);
-
-	key = request_key(&key_type_keyring, description, NULL);
-	if (IS_ERR(key)) {
-		kfree(description);
-		_leave(" = %ld", PTR_ERR(key));
-		return PTR_ERR(key);
+	switch ((uintptr_t)key->payload.data[1]) {
+#ifdef CONFIG_RXGK
+	case RXRPC_SECURITY_YFS_RXGK:
+		rxgk_describe_server_key(key, m);
+		break;
+#endif
+	default:
+		break;
 	}
-
-	rx->securities = key;
-	kfree(description);
-	_leave(" = 0 [key %x]", key->serial);
-	return 0;
 }
-
-/**
- * rxrpc_sock_set_security_keyring - Set the security keyring for a kernel service
- * @sk: The socket to set the keyring on
- * @keyring: The keyring to set
- *
- * Set the server security keyring on an rxrpc socket.  This is used to provide
- * the encryption keys for a kernel service.
- *
- * Return: %0 if successful and a negative error code otherwise.
- */
-int rxrpc_sock_set_security_keyring(struct sock *sk, struct key *keyring)
-{
-	struct rxrpc_sock *rx = rxrpc_sk(sk);
-	int ret = 0;
-
-	lock_sock(sk);
-	if (rx->securities)
-		ret = -EINVAL;
-	else if (rx->sk.sk_state != RXRPC_UNBOUND)
-		ret = -EISCONN;
-	else
-		rx->securities = key_get(keyring);
-	release_sock(sk);
-	return ret;
-}
-EXPORT_SYMBOL(rxrpc_sock_set_security_keyring);
-
-/**
- * rxrpc_sock_set_manage_response - Set the manage-response flag for a kernel service
- * @sk: The socket to set the keyring on
- * @set: True to set, false to clear the flag
- *
- * Set the flag on an rxrpc socket to say that the caller wants to manage the
- * RESPONSE packet and the user-defined data it may contain.  Setting this
- * means that recvmsg() will return messages with RXRPC_CHALLENGED in the
- * control message buffer containing information about the challenge.
- *
- * The user should respond to the challenge by passing RXRPC_RESPOND or
- * RXRPC_RESPOND_ABORT control messages with sendmsg() to the same call.
- * Supplementary control messages, such as RXRPC_RESP_RXGK_APPDATA, may be
- * included to indicate the parts the user wants to supply.
- *
- * The server will be passed the response data with a RXRPC_RESPONDED control
- * message when it gets the first data from each call.
- *
- * Note that this is only honoured by security classes that need auxiliary data
- * (e.g. RxGK).  Those that don't offer the facility (e.g. RxKAD) respond
- * without consulting userspace.
- *
- * Return: The previous setting.
- */
-int rxrpc_sock_set_manage_response(struct sock *sk, bool set)
-{
-	struct rxrpc_sock *rx = rxrpc_sk(sk);
-	int ret;
-
-	lock_sock(sk);
-	ret = !!test_bit(RXRPC_SOCK_MANAGE_RESPONSE, &rx->flags);
-	if (set)
-		set_bit(RXRPC_SOCK_MANAGE_RESPONSE, &rx->flags);
-	else
-		clear_bit(RXRPC_SOCK_MANAGE_RESPONSE, &rx->flags);
-	release_sock(sk);
-	return ret;
-}
-EXPORT_SYMBOL(rxrpc_sock_set_manage_response);

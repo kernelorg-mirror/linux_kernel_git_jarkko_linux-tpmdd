@@ -10,6 +10,8 @@
 #include <linux/skbuff.h>
 #include <linux/udp.h>
 #include <linux/crypto.h>
+#include <linux/key-type.h>
+#include <linux/slab.h>
 #include <net/sock.h>
 #include <net/af_rxrpc.h>
 #include <keys/rxrpc-type.h>
@@ -208,3 +210,185 @@ out:
 	read_unlock(&conn->local->services_lock);
 	return key;
 }
+
+/*
+ * grab the security key for a socket
+ */
+int rxrpc_request_key(struct rxrpc_sock *rx, sockptr_t optval, int optlen)
+{
+	struct key *key;
+	char *description;
+
+	_enter("");
+
+	if (optlen <= 0 || optlen > PAGE_SIZE - 1 || rx->key)
+		return -EINVAL;
+
+	description = memdup_sockptr_nul(optval, optlen);
+	if (IS_ERR(description))
+		return PTR_ERR(description);
+
+	key = request_key_net(&key_type_rxrpc, description, sock_net(&rx->sk), NULL);
+	if (IS_ERR(key)) {
+		kfree(description);
+		_leave(" = %ld", PTR_ERR(key));
+		return PTR_ERR(key);
+	}
+
+	rx->key = key;
+	kfree(description);
+	_leave(" = 0 [key %x]", key->serial);
+	return 0;
+}
+
+/*
+ * generate a server data key
+ */
+int rxrpc_get_server_data_key(struct rxrpc_connection *conn,
+			      const void *session_key,
+			      time64_t expiry,
+			      u32 kvno)
+{
+	const struct cred *cred = current_cred();
+	struct {
+		u32 kver;
+		struct rxrpc_key_data_v1 v1;
+	} data;
+	struct key *key;
+	int ret;
+
+	_enter("");
+
+	key = key_alloc(&key_type_rxrpc, "x",
+			GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, cred, 0,
+			KEY_ALLOC_NOT_IN_QUOTA, NULL);
+	if (IS_ERR(key)) {
+		_leave(" = -ENOMEM [alloc %ld]", PTR_ERR(key));
+		return -ENOMEM;
+	}
+
+	_debug("key %d", key_serial(key));
+
+	data.kver = 1;
+	data.v1.security_index = RXRPC_SECURITY_RXKAD;
+	data.v1.ticket_length = 0;
+	data.v1.expiry = rxrpc_time64_to_u32(expiry);
+	data.v1.kvno = 0;
+
+	memcpy(&data.v1.session_key, session_key, sizeof(data.v1.session_key));
+
+	ret = key_instantiate_and_link(key, &data, sizeof(data), NULL, NULL);
+	if (ret < 0)
+		goto error;
+
+	conn->key = key;
+	_leave(" = 0 [%d]", key_serial(key));
+	return 0;
+
+error:
+	key_revoke(key);
+	key_put(key);
+	_leave(" = -ENOMEM [ins %d]", ret);
+	return -ENOMEM;
+}
+EXPORT_SYMBOL(rxrpc_get_server_data_key);
+
+/*
+ * grab the security keyring for a server socket
+ */
+int rxrpc_server_keyring(struct rxrpc_sock *rx, sockptr_t optval, int optlen)
+{
+	struct key *key;
+	char *description;
+
+	_enter("");
+
+	if (rx->securities)
+		return -EINVAL;
+
+	if (optlen <= 0 || optlen > PAGE_SIZE - 1)
+		return -EINVAL;
+
+	description = memdup_sockptr_nul(optval, optlen);
+	if (IS_ERR(description))
+		return PTR_ERR(description);
+
+	key = request_key(&key_type_keyring, description, NULL);
+	if (IS_ERR(key)) {
+		kfree(description);
+		_leave(" = %ld", PTR_ERR(key));
+		return PTR_ERR(key);
+	}
+
+	rx->securities = key;
+	kfree(description);
+	_leave(" = 0 [key %x]", key->serial);
+	return 0;
+}
+
+/**
+ * rxrpc_sock_set_security_keyring - Set the security keyring for a kernel service
+ * @sk: The socket to set the keyring on
+ * @keyring: The keyring to set
+ *
+ * Set the server security keyring on an rxrpc socket.  This is used to provide
+ * the encryption keys for a kernel service.
+ *
+ * Return: %0 if successful and a negative error code otherwise.
+ */
+int rxrpc_sock_set_security_keyring(struct sock *sk, struct key *keyring)
+{
+	struct rxrpc_sock *rx = rxrpc_sk(sk);
+	int ret = 0;
+
+	lock_sock(sk);
+	if (rx->securities)
+		ret = -EINVAL;
+	else if (rx->sk.sk_state != RXRPC_UNBOUND)
+		ret = -EISCONN;
+	else
+		rx->securities = key_get(keyring);
+	release_sock(sk);
+	return ret;
+}
+EXPORT_SYMBOL(rxrpc_sock_set_security_keyring);
+
+/**
+ * rxrpc_sock_set_manage_response - Set the manage-response flag for a kernel service
+ * @sk: The socket to set the keyring on
+ * @set: True to set, false to clear the flag
+ *
+ * Set the flag on an rxrpc socket to say that the caller wants to manage the
+ * RESPONSE packet and the user-defined data it may contain.  Setting this
+ * means that recvmsg() will return messages with RXRPC_CHALLENGED in the
+ * control message buffer containing information about the challenge.
+ *
+ * The user should respond to the challenge by passing RXRPC_RESPOND or
+ * RXRPC_RESPOND_ABORT control messages with sendmsg() to the same call.
+ * Supplementary control messages, such as RXRPC_RESP_RXGK_APPDATA, may be
+ * included to indicate the parts the user wants to supply.
+ *
+ * The server will be passed the response data with a RXRPC_RESPONDED control
+ * message when it gets the first data from each call.
+ *
+ * Note that this is only honoured by security classes that need auxiliary data
+ * (e.g. RxGK).  Those that don't offer the facility (e.g. RxKAD) respond
+ * without consulting userspace.
+ *
+ * Return: The previous setting.
+ */
+int rxrpc_sock_set_manage_response(struct sock *sk, bool set)
+{
+	struct rxrpc_sock *rx = rxrpc_sk(sk);
+	int ret;
+
+	lock_sock(sk);
+	ret = !!test_bit(RXRPC_SOCK_MANAGE_RESPONSE, &rx->flags);
+	if (set)
+		set_bit(RXRPC_SOCK_MANAGE_RESPONSE, &rx->flags);
+	else
+		clear_bit(RXRPC_SOCK_MANAGE_RESPONSE, &rx->flags);
+	release_sock(sk);
+	return ret;
+}
+EXPORT_SYMBOL(rxrpc_sock_set_manage_response);

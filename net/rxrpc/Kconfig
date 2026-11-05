@@ -3,6 +3,18 @@
 # RxRPC session sockets
 #
 
+config RXRPC_KEYS
+	tristate "RxRPC key types"
+	select CRYPTO
+	select CRYPTO_LIB_DES if RXKAD
+	select KEYS
+	help
+	  Say Y or M here to include support for rxrpc and rxrpc_s key types
+	  independently of RxRPC session sockets.
+
+	  To compile this as a module, choose M here: the module will be called
+	  rxrpc_keys.
+
 config AF_RXRPC
 	tristate "RxRPC session sockets"
 	depends on INET
@@ -10,6 +22,7 @@ config AF_RXRPC
 	select CRYPTO_LIB_DES if RXKAD
 	select KEYS
 	select NET_UDP_TUNNEL
+	select RXRPC_KEYS
 	help
 	  Say Y or M here to include support for RxRPC session sockets (just
 	  the transport part, not the presentation part: (un)marshalling is
@@ -54,6 +67,9 @@ config AF_RXRPC_DEBUG
 
 	  See Documentation/networking/rxrpc.rst.
 
+endif
+
+if RXRPC_KEYS
 
 config RXKAD
 	bool "RxRPC Kerberos security"
@@ -85,6 +101,10 @@ config RXGK
 	  with add_key().
 
 	  See Documentation/networking/rxrpc.rst.
+
+endif
+
+if AF_RXRPC
 
 config RXPERF
 	tristate "RxRPC test service"
