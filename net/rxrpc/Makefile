@@ -3,6 +3,7 @@
 # Makefile for Linux kernel RxRPC
 #
 
+obj-$(CONFIG_RXRPC_KEYS) += rxrpc_keys.o
 obj-$(CONFIG_AF_RXRPC) += rxrpc.o
 
 rxrpc-y := \
@@ -19,7 +20,6 @@ rxrpc-y := \
 	input_rack.o \
 	insecure.o \
 	io_thread.o \
-	key.o \
 	local_event.o \
 	local_object.o \
 	misc.o \
@@ -32,7 +32,6 @@ rxrpc-y := \
 	rtt.o \
 	security.o \
 	sendmsg.o \
-	server_key.o \
 	skbuff.o \
 	txbuf.o \
 	utils.o
@@ -44,6 +43,10 @@ rxrpc-$(CONFIG_RXGK) += \
 	rxgk.o \
 	rxgk_app.o \
 	rxgk_kdf.o
+
+rxrpc_keys-y := \
+	key.o \
+	server_key.o
 
 obj-$(CONFIG_RXPERF) += rxperf.o
 obj-$(CONFIG_KUNIT) += tests/

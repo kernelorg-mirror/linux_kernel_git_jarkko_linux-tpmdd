@@ -1077,18 +1077,6 @@ static int __init af_rxrpc_init(void)
 		goto error_sock;
 	}
 
-	ret = register_key_type(&key_type_rxrpc);
-	if (ret < 0) {
-		pr_crit("Cannot register client key type\n");
-		goto error_key_type;
-	}
-
-	ret = register_key_type(&key_type_rxrpc_s);
-	if (ret < 0) {
-		pr_crit("Cannot register server key type\n");
-		goto error_key_type_s;
-	}
-
 	ret = rxrpc_sysctl_init();
 	if (ret < 0) {
 		pr_crit("Cannot register sysctls\n");
@@ -1098,10 +1086,6 @@ static int __init af_rxrpc_init(void)
 	return 0;
 
 error_sysctls:
-	unregister_key_type(&key_type_rxrpc_s);
-error_key_type_s:
-	unregister_key_type(&key_type_rxrpc);
-error_key_type:
 	sock_unregister(PF_RXRPC);
 error_sock:
 	proto_unregister(&rxrpc_proto);
@@ -1124,8 +1108,6 @@ static void __exit af_rxrpc_exit(void)
 {
 	_enter("");
 	rxrpc_sysctl_exit();
-	unregister_key_type(&key_type_rxrpc_s);
-	unregister_key_type(&key_type_rxrpc);
 	sock_unregister(PF_RXRPC);
 	proto_unregister(&rxrpc_proto);
 	unregister_pernet_device(&rxrpc_net_ops);
@@ -1139,6 +1121,7 @@ static void __exit af_rxrpc_exit(void)
 	destroy_workqueue(rxrpc_workqueue);
 	rxrpc_exit_security();
 	kmem_cache_destroy(rxrpc_call_jar);
+	key_gc_flush();
 	_leave("");
 }
 
