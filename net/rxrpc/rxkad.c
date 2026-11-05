@@ -48,50 +48,6 @@ static void rxkad_prime_packet_security(struct rxrpc_connection *conn,
 					const struct fcrypt_key *cipher);
 
 /*
- * Parse the information from a server key
- *
- * The data should be the 8-byte secret key.
- */
-static int rxkad_preparse_server_key(struct key_preparsed_payload *prep)
-{
-	struct des_ctx *des_key;
-	int err;
-
-	if (prep->datalen != 8)
-		return -EINVAL;
-
-	memcpy(&prep->payload.data[2], prep->data, 8);
-
-	des_key = kmalloc_obj(*des_key);
-	if (!des_key) {
-		_leave(" = -ENOMEM");
-		return -ENOMEM;
-	}
-
-	err = des_expand_key(des_key, prep->data, 8);
-	if (err) {
-		kfree_sensitive(des_key);
-		_leave(" = %d", err);
-		return err;
-	}
-
-	prep->payload.data[0] = des_key;
-	_leave(" = 0");
-	return 0;
-}
-
-static void rxkad_free_preparse_server_key(struct key_preparsed_payload *prep)
-{
-	kfree_sensitive(prep->payload.data[0]);
-}
-
-static void rxkad_destroy_server_key(struct key *key)
-{
-	kfree_sensitive(key->payload.data[0]);
-	key->payload.data[0] = NULL;
-}
-
-/*
  * initialise connection security
  */
 static int rxkad_init_connection_security(struct rxrpc_connection *conn,
@@ -1124,9 +1080,6 @@ const struct rxrpc_security rxkad = {
 	.no_key_abort			= RXKADUNKNOWNKEY,
 	.init				= rxkad_init,
 	.exit				= rxkad_exit,
-	.preparse_server_key		= rxkad_preparse_server_key,
-	.free_preparse_server_key	= rxkad_free_preparse_server_key,
-	.destroy_server_key		= rxkad_destroy_server_key,
 	.init_connection_security	= rxkad_init_connection_security,
 	.alloc_txbuf			= rxkad_alloc_txbuf,
 	.secure_packet			= rxkad_secure_packet,
