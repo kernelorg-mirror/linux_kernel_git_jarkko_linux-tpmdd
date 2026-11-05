@@ -9,6 +9,7 @@
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#define RXRPC_KEY_PROVIDER
 
 #include <linux/module.h>
 #include <linux/net.h>
@@ -615,89 +616,6 @@ static void rxrpc_describe(const struct key *key, struct seq_file *m)
 	}
 }
 
-/*
- * grab the security key for a socket
- */
-int rxrpc_request_key(struct rxrpc_sock *rx, sockptr_t optval, int optlen)
-{
-	struct key *key;
-	char *description;
-
-	_enter("");
-
-	if (optlen <= 0 || optlen > PAGE_SIZE - 1 || rx->key)
-		return -EINVAL;
-
-	description = memdup_sockptr_nul(optval, optlen);
-	if (IS_ERR(description))
-		return PTR_ERR(description);
-
-	key = request_key_net(&key_type_rxrpc, description, sock_net(&rx->sk), NULL);
-	if (IS_ERR(key)) {
-		kfree(description);
-		_leave(" = %ld", PTR_ERR(key));
-		return PTR_ERR(key);
-	}
-
-	rx->key = key;
-	kfree(description);
-	_leave(" = 0 [key %x]", key->serial);
-	return 0;
-}
-
-/*
- * generate a server data key
- */
-int rxrpc_get_server_data_key(struct rxrpc_connection *conn,
-			      const void *session_key,
-			      time64_t expiry,
-			      u32 kvno)
-{
-	const struct cred *cred = current_cred();
-	struct key *key;
-	int ret;
-
-	struct {
-		u32 kver;
-		struct rxrpc_key_data_v1 v1;
-	} data;
-
-	_enter("");
-
-	key = key_alloc(&key_type_rxrpc, "x",
-			GLOBAL_ROOT_UID, GLOBAL_ROOT_GID, cred, 0,
-			KEY_ALLOC_NOT_IN_QUOTA, NULL);
-	if (IS_ERR(key)) {
-		_leave(" = -ENOMEM [alloc %ld]", PTR_ERR(key));
-		return -ENOMEM;
-	}
-
-	_debug("key %d", key_serial(key));
-
-	data.kver = 1;
-	data.v1.security_index = RXRPC_SECURITY_RXKAD;
-	data.v1.ticket_length = 0;
-	data.v1.expiry = rxrpc_time64_to_u32(expiry);
-	data.v1.kvno = 0;
-
-	memcpy(&data.v1.session_key, session_key, sizeof(data.v1.session_key));
-
-	ret = key_instantiate_and_link(key, &data, sizeof(data), NULL, NULL);
-	if (ret < 0)
-		goto error;
-
-	conn->key = key;
-	_leave(" = 0 [%d]", key_serial(key));
-	return 0;
-
-error:
-	key_revoke(key);
-	key_put(key);
-	_leave(" = -ENOMEM [ins %d]", ret);
-	return -ENOMEM;
-}
-EXPORT_SYMBOL(rxrpc_get_server_data_key);
-
 /**
  * rxrpc_get_null_key - Generate a null RxRPC key
  * @keyname: The name to give the key.
@@ -893,3 +811,41 @@ static long rxrpc_read(const struct key *key,
 	_leave(" = %zu", size);
 	return size;
 }
+
+static int __init rxrpc_keys_init(void)
+{
+	int ret;
+
+	ret = register_key_type(&key_type_rxrpc);
+	if (ret < 0) {
+		pr_crit("Cannot register client key type\n");
+		goto error_key_type;
+	}
+
+	ret = register_key_type(&key_type_rxrpc_s);
+	if (ret < 0) {
+		pr_crit("Cannot register server key type\n");
+		goto error_key_type_s;
+	}
+
+	return 0;
+
+error_key_type_s:
+	unregister_key_type(&key_type_rxrpc);
+
+error_key_type:
+	return ret;
+}
+
+static void __exit rxrpc_keys_exit(void)
+{
+	unregister_key_type(&key_type_rxrpc_s);
+	unregister_key_type(&key_type_rxrpc);
+}
+
+module_init(rxrpc_keys_init);
+module_exit(rxrpc_keys_exit);
+
+MODULE_DESCRIPTION("RxRPC key types");
+MODULE_AUTHOR("David Howells <dhowells@redhat.com>");
+MODULE_LICENSE("GPL");

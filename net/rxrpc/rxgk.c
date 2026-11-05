@@ -15,68 +15,6 @@
 #include "rxgk_common.h"
 
 /*
- * Parse the information from a server key
- */
-static int rxgk_preparse_server_key(struct key_preparsed_payload *prep)
-{
-	const struct krb5_enctype *krb5;
-	struct krb5_buffer *server_key = (void *)&prep->payload.data[2];
-	unsigned int service, sec_class, kvno, enctype;
-	int n = 0;
-
-	_enter("%zu", prep->datalen);
-
-	if (sscanf(prep->orig_description, "%u:%u:%u:%u%n",
-		   &service, &sec_class, &kvno, &enctype, &n) != 4)
-		return -EINVAL;
-
-	if (prep->orig_description[n])
-		return -EINVAL;
-
-	krb5 = crypto_krb5_find_enctype(enctype);
-	if (!krb5)
-		return -ENOPKG;
-
-	prep->payload.data[0] = (struct krb5_enctype *)krb5;
-
-	if (prep->datalen != krb5->key_len)
-		return -EKEYREJECTED;
-
-	server_key->len = prep->datalen;
-	server_key->data = kmemdup(prep->data, prep->datalen, GFP_KERNEL);
-	if (!server_key->data)
-		return -ENOMEM;
-
-	_leave(" = 0");
-	return 0;
-}
-
-static void rxgk_free_server_key(union key_payload *payload)
-{
-	struct krb5_buffer *server_key = (void *)&payload->data[2];
-
-	kfree_sensitive(server_key->data);
-}
-
-static void rxgk_free_preparse_server_key(struct key_preparsed_payload *prep)
-{
-	rxgk_free_server_key(&prep->payload);
-}
-
-static void rxgk_destroy_server_key(struct key *key)
-{
-	rxgk_free_server_key(&key->payload);
-}
-
-static void rxgk_describe_server_key(const struct key *key, struct seq_file *m)
-{
-	const struct krb5_enctype *krb5 = key->payload.data[0];
-
-	if (krb5)
-		seq_printf(m, ": %s", krb5->name);
-}
-
-/*
  * Handle rekeying the connection when we see our limits overrun or when the
  * far side decided to rekey.
  *
@@ -1335,10 +1273,6 @@ const struct rxrpc_security rxgk_yfs = {
 	.no_key_abort			= RXGK_NOTAUTH,
 	.init				= rxgk_init,
 	.exit				= rxgk_exit,
-	.preparse_server_key		= rxgk_preparse_server_key,
-	.free_preparse_server_key	= rxgk_free_preparse_server_key,
-	.destroy_server_key		= rxgk_destroy_server_key,
-	.describe_server_key		= rxgk_describe_server_key,
 	.init_connection_security	= rxgk_init_connection_security,
 	.alloc_txbuf			= rxgk_alloc_txbuf,
 	.secure_packet			= rxgk_secure_packet,

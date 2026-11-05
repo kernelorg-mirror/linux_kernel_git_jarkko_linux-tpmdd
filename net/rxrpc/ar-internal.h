@@ -273,18 +273,6 @@ struct rxrpc_security {
 	/* Clean up a security service */
 	void (*exit)(void);
 
-	/* Parse the information from a server key */
-	int (*preparse_server_key)(struct key_preparsed_payload *);
-
-	/* Clean up the preparse buffer after parsing a server key */
-	void (*free_preparse_server_key)(struct key_preparsed_payload *);
-
-	/* Destroy the payload of a server key */
-	void (*destroy_server_key)(struct key *);
-
-	/* Describe a server key */
-	void (*describe_server_key)(const struct key *, struct seq_file *);
-
 	/* initialise a connection's security */
 	int (*init_connection_security)(struct rxrpc_connection *,
 					struct rxrpc_key_token *);
@@ -1307,10 +1295,6 @@ extern const struct rxrpc_security rxrpc_no_security;
  */
 extern struct key_type key_type_rxrpc;
 
-int rxrpc_request_key(struct rxrpc_sock *, sockptr_t , int);
-int rxrpc_get_server_data_key(struct rxrpc_connection *, const void *, time64_t,
-			      u32);
-
 /*
  * local_event.c
  */
@@ -1492,6 +1476,11 @@ const struct rxrpc_security *rxrpc_get_incoming_security(struct rxrpc_sock *,
 							 struct sk_buff *);
 struct key *rxrpc_look_up_server_security(struct rxrpc_connection *,
 					  struct sk_buff *, u32, u32);
+int rxrpc_request_key(struct rxrpc_sock *rx, sockptr_t optval, int optlen);
+int rxrpc_get_server_data_key(struct rxrpc_connection *conn,
+			      const void *session_key, time64_t expiry,
+			      u32 kvno);
+int rxrpc_server_keyring(struct rxrpc_sock *rx, sockptr_t optval, int optlen);
 
 /*
  * sendmsg.c
@@ -1504,8 +1493,6 @@ int rxrpc_do_sendmsg(struct rxrpc_sock *, struct msghdr *, size_t);
  * server_key.c
  */
 extern struct key_type key_type_rxrpc_s;
-
-int rxrpc_server_keyring(struct rxrpc_sock *, sockptr_t, int);
 
 /*
  * skbuff.c
@@ -1633,7 +1620,7 @@ extern unsigned int rxrpc_debug;
 #define _leave(FMT,...)	kleave(FMT,##__VA_ARGS__)
 #define _debug(FMT,...)	kdebug(FMT,##__VA_ARGS__)
 
-#elif defined(CONFIG_AF_RXRPC_DEBUG)
+#elif defined(CONFIG_AF_RXRPC_DEBUG) && !defined(RXRPC_KEY_PROVIDER)
 #define RXRPC_DEBUG_KENTER	0x01
 #define RXRPC_DEBUG_KLEAVE	0x02
 #define RXRPC_DEBUG_KDEBUG	0x04
