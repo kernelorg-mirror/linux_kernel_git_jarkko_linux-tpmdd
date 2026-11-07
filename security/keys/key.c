@@ -431,7 +431,7 @@ static int __key_instantiate_and_link(struct key *key,
 				      struct key_preparsed_payload *prep,
 				      struct key *keyring,
 				      struct key *authkey,
-				      struct assoc_array_edit **_edit)
+				      struct keyring_edit *edit)
 {
 	int ret, awaken;
 
@@ -463,7 +463,7 @@ static int __key_instantiate_and_link(struct key *key,
 				if (test_bit(KEY_FLAG_KEEP, &keyring->flags))
 					set_bit(KEY_FLAG_KEEP, &key->flags);
 
-				__key_link(keyring, key, _edit);
+				__key_link(keyring, key, edit);
 			}
 
 			/* disable the authorisation key */
@@ -510,7 +510,7 @@ int key_instantiate_and_link(struct key *key,
 			     struct key *authkey)
 {
 	struct key_preparsed_payload prep;
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_edit edit = {};
 	int ret, srcu_idx;
 
 	/*
@@ -566,7 +566,7 @@ int key_instantiate_and_link(struct key *key,
 
 out_link_end:
 	if (keyring)
-		__key_link_end(keyring, &key->index_key, edit);
+		__key_link_end(keyring, &key->index_key, &edit);
 
 out_free_preparse:
 	if (key->type->preparse)
@@ -609,7 +609,7 @@ int key_reject_and_link(struct key *key,
 			struct key *keyring,
 			struct key *authkey)
 {
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_edit edit = {};
 	int ret, awaken, link_ret = 0, srcu_idx;
 	bool dead;
 
@@ -644,7 +644,7 @@ int key_reject_and_link(struct key *key,
 				 */
 				if (keyring->restrict_link) {
 					__key_link_end(keyring, &key->index_key,
-						       edit);
+						       &edit);
 					ret = -EPERM;
 					goto out;
 				}
@@ -653,7 +653,7 @@ int key_reject_and_link(struct key *key,
 							    &edit);
 				if (link_ret < 0)
 					__key_link_end(keyring, &key->index_key,
-						       edit);
+						       &edit);
 			}
 		}
 	}
@@ -704,7 +704,7 @@ int key_reject_and_link(struct key *key,
 	mutex_unlock(&key_construction_mutex);
 
 	if (keyring && link_ret == 0)
-		__key_link_end(keyring, &key->index_key, edit);
+		__key_link_end(keyring, &key->index_key, &edit);
 
 	/* wake up anyone waiting for a key to be constructed */
 	if (awaken)
@@ -897,7 +897,7 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 		.description	= description,
 	};
 	struct key_preparsed_payload prep;
-	struct assoc_array_edit *edit = NULL;
+	struct keyring_edit edit = {};
 	const struct cred *cred = current_cred();
 	struct key *keyring, *key = NULL;
 	key_ref_t key_ref;
@@ -1038,7 +1038,7 @@ static key_ref_t __key_create_or_update(key_ref_t keyring_ref,
 	key_ref = make_key_ref(key, is_key_possessed(keyring_ref));
 
 error_link_end:
-	__key_link_end(keyring, &index_key, edit);
+	__key_link_end(keyring, &index_key, &edit);
 error_free_prep:
 	if (index_key.type->preparse)
 		index_key.type->free_preparse(&prep);
@@ -1051,7 +1051,7 @@ error:
 	/* we found a matching key, so we're going to try to update it
 	 * - we can drop the locks first as we have the key pinned
 	 */
-	__key_link_end(keyring, &index_key, edit);
+	__key_link_end(keyring, &index_key, &edit);
 
 	key = key_ref_to_ptr(key_ref);
 	if (test_bit(KEY_FLAG_USER_CONSTRUCT, &key->flags)) {
