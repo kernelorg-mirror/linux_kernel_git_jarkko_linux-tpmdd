@@ -298,8 +298,13 @@ static int rxrpc_process_event(struct rxrpc_connection *conn,
 
 		ret = conn->security->init_connection_security(
 			conn, conn->key->payload.data[0]);
-		if (ret < 0)
+		if (ret < 0) {
+			struct key *key = conn->key;
+
+			WRITE_ONCE(conn->key, NULL);
+			key_put(key);
 			return ret;
+		}
 
 		spin_lock_irq(&conn->state_lock);
 		if (conn->state == RXRPC_CONN_SERVICE_CHALLENGING) {
