@@ -182,7 +182,7 @@ print:
 		   refcount_read(&conn->ref),
 		   atomic_read(&conn->active),
 		   state,
-		   key_serial(conn->key),
+		   key_serial(READ_ONCE(conn->key)),
 		   conn->tx_serial,
 		   conn->hi_serial,
 		   conn->channels[0].call_id,
