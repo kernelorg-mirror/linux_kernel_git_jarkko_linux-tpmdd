@@ -1128,6 +1128,8 @@ static int tpm2_parse_create_primary(struct tpm_chip *chip, struct tpm_buf *buf,
 		return -EINVAL;
 	len = tpm_buf_read_u16(buf, &offset_r);
 	offset_t = offset_r;
+	if (offset_r + len > tpm_buf_length(buf))
+		return -EINVAL;
 	if (name) {
 		/*
 		 * now we have the public area, compute the name of
