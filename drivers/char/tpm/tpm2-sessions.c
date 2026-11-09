@@ -874,6 +874,10 @@ int tpm_buf_check_hmac_response(struct tpm_chip *chip, struct tpm_buf *buf,
 			  auth->scratch);
 
 		len = tpm_buf_read_u16(buf, &offset_p);
+		if (offset_p + len > tpm_buf_length(buf)) {
+			rc = -EINVAL;
+			goto out;
+		}
 		aes_prepareenckey(&auth->aes_key, auth->scratch, AES_KEY_BYTES);
 		aescfb_decrypt(&auth->aes_key, &buf->data[offset_p],
 			       &buf->data[offset_p], len,
