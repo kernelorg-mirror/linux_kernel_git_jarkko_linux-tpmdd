@@ -121,6 +121,13 @@ static int tpm_ibmvtpm_recv(struct tpm_chip *chip, u8 *buf, size_t count)
 		return -EIO;
 	}
 
+	if (len > ibmvtpm->rtce_size) {
+		dev_err(ibmvtpm->dev,
+			"Invalid size in recv: res_len=%d, rtce_size=%d\n",
+			len, ibmvtpm->rtce_size);
+		return -EIO;
+	}
+
 	spin_lock(&ibmvtpm->rtce_lock);
 	memcpy((void *)buf, (void *)ibmvtpm->rtce_buf, len);
 	memset(ibmvtpm->rtce_buf, 0, len);
