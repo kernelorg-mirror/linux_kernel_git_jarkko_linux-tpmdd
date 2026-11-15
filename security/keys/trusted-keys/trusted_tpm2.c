@@ -211,9 +211,11 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 		      struct trusted_key_options *options)
 {
 	struct trusted_key_tpm *private = options->private;
+	u8 parent_name[TPM2_MAX_NAME_SIZE];
 	off_t offset = TPM_HEADER_SIZE;
 	struct tpm_buf *buf __free(kfree) = NULL;
 	struct tpm_buf *sized __free(kfree) = NULL;
+	u16 parent_name_size;
 	int blob_len = 0;
 	int hash;
 	u32 flags;
@@ -229,6 +231,12 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 	rc = tpm_try_get_ops(chip);
 	if (rc)
 		return rc;
+
+	rc = tpm2_read_public(chip, private->keyhandle, parent_name);
+	if (rc < 0)
+		goto out_put;
+
+	parent_name_size = rc;
 
 	rc = tpm2_start_auth_session(chip);
 	if (rc)
@@ -253,7 +261,8 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 
 	tpm_buf_init_sized(sized, TPM_BUFSIZE);
 
-	rc = tpm_buf_append_name(chip, buf, private->keyhandle, NULL);
+	rc = tpm_buf_append_name(chip, buf, private->keyhandle, parent_name,
+				 parent_name_size);
 	if (rc)
 		goto out;
 
@@ -358,7 +367,9 @@ static int tpm2_load_cmd(struct tpm_chip *chip,
 {
 	u8 *blob_ref __free(kfree) = NULL;
 	struct trusted_key_tpm *private = options->private;
+	u8 parent_name[TPM2_MAX_NAME_SIZE];
 	struct tpm_buf *buf __free(kfree) = NULL;
+	u16 parent_name_size;
 	unsigned int private_len;
 	unsigned int public_len;
 	unsigned int blob_len;
@@ -412,6 +423,12 @@ static int tpm2_load_cmd(struct tpm_chip *chip,
 	if (blob_len > payload->blob_len)
 		return -E2BIG;
 
+	rc = tpm2_read_public(chip, private->keyhandle, parent_name);
+	if (rc < 0)
+		return rc;
+
+	parent_name_size = rc;
+
 	rc = tpm2_start_auth_session(chip);
 	if (rc)
 		return rc;
@@ -425,7 +442,8 @@ static int tpm2_load_cmd(struct tpm_chip *chip,
 	tpm_buf_init(buf, TPM_BUFSIZE);
 	tpm_buf_reset(buf, TPM2_ST_SESSIONS, TPM2_CC_LOAD);
 
-	rc = tpm_buf_append_name(chip, buf, private->keyhandle, NULL);
+	rc = tpm_buf_append_name(chip, buf, private->keyhandle, parent_name,
+				 parent_name_size);
 	if (rc)
 		return rc;
 
@@ -470,10 +488,18 @@ static int tpm2_unseal_cmd(struct tpm_chip *chip,
 			   u32 blob_handle)
 {
 	struct trusted_key_tpm *private = options->private;
+	u8 blob_name[TPM2_MAX_NAME_SIZE];
 	struct tpm_buf *buf __free(kfree) = NULL;
+	u16 blob_name_size;
 	u16 data_len;
 	u8 *data;
 	int rc;
+
+	rc = tpm2_read_public(chip, blob_handle, blob_name);
+	if (rc < 0)
+		return rc;
+
+	blob_name_size = rc;
 
 	rc = tpm2_start_auth_session(chip);
 	if (rc)
@@ -488,7 +514,8 @@ static int tpm2_unseal_cmd(struct tpm_chip *chip,
 	tpm_buf_init(buf, TPM_BUFSIZE);
 	tpm_buf_reset(buf, TPM2_ST_SESSIONS, TPM2_CC_UNSEAL);
 
-	rc = tpm_buf_append_name(chip, buf, blob_handle, NULL);
+	rc = tpm_buf_append_name(chip, buf, blob_handle, blob_name,
+				 blob_name_size);
 	if (rc)
 		return rc;
 

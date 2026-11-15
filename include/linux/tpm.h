@@ -300,7 +300,7 @@ static inline struct tpm2_auth *tpm2_chip_auth(struct tpm_chip *chip)
 }
 
 int tpm_buf_append_name(struct tpm_chip *chip, struct tpm_buf *buf,
-			u32 handle, u8 *name);
+			u32 handle, u8 *name, u16 name_size);
 void tpm_buf_append_hmac_session(struct tpm_chip *chip, struct tpm_buf *buf,
 				 u8 attributes, u8 *passphrase,
 				 int passphraselen);
@@ -314,6 +314,7 @@ int tpm_buf_fill_hmac_session(struct tpm_chip *chip, struct tpm_buf *buf);
 int tpm_buf_check_hmac_response(struct tpm_chip *chip, struct tpm_buf *buf,
 				int rc);
 void tpm2_end_auth_session(struct tpm_chip *chip);
+int tpm2_read_public(struct tpm_chip *chip, u32 handle, void *name);
 #else
 #include <linux/unaligned.h>
 
@@ -336,6 +337,13 @@ static inline int tpm_buf_check_hmac_response(struct tpm_chip *chip,
 					      int rc)
 {
 	return rc;
+}
+
+static inline int tpm2_read_public(struct tpm_chip *chip, u32 handle,
+				   void *name)
+{
+	put_unaligned_be32(handle, name);
+	return sizeof(u32);
 }
 #endif	/* CONFIG_TCG_TPM2_HMAC */
 

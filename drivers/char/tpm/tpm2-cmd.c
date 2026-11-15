@@ -194,11 +194,12 @@ int tpm2_pcr_extend(struct tpm_chip *chip, u32 pcr_idx,
 	tpm_buf_reset(buf, TPM2_ST_SESSIONS, TPM2_CC_PCR_EXTEND);
 
 	if (!disable_pcr_integrity) {
-		rc = tpm_buf_append_name(chip, buf, pcr_idx, NULL);
-		if (rc) {
-			tpm2_end_auth_session(chip);
+		__be32 pcr_idx_be = cpu_to_be32(pcr_idx);
+
+		rc = tpm_buf_append_name(chip, buf, pcr_idx,
+					 (u8 *)&pcr_idx_be, sizeof(pcr_idx_be));
+		if (rc)
 			return rc;
-		}
 		tpm_buf_append_hmac_session(chip, buf, 0, NULL, 0);
 	} else {
 		tpm_buf_append_handle(buf, pcr_idx);
