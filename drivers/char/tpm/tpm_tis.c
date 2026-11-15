@@ -127,45 +127,11 @@ static inline int is_itpm(struct acpi_device *dev)
 #endif
 
 #if defined(CONFIG_ACPI)
-#define DEVICE_IS_TPM2 1
-
 static const struct acpi_device_id tpm_acpi_tbl[] = {
-	{"MSFT0101", DEVICE_IS_TPM2},
+	{"MSFT0101"},
 	{},
 };
 MODULE_DEVICE_TABLE(acpi, tpm_acpi_tbl);
-
-static int check_acpi_tpm2(struct device *dev)
-{
-	const struct acpi_device_id *aid = acpi_match_device(tpm_acpi_tbl, dev);
-	struct acpi_table_tpm2 *tbl;
-	acpi_status st;
-	int ret = 0;
-
-	if (!aid || aid->driver_data != DEVICE_IS_TPM2)
-		return 0;
-
-	/* If the ACPI TPM2 signature is matched then a global ACPI_SIG_TPM2
-	 * table is mandatory
-	 */
-	st = acpi_get_table(ACPI_SIG_TPM2, 1, (struct acpi_table_header **)&tbl);
-	if (ACPI_FAILURE(st) || tbl->header.length < sizeof(*tbl)) {
-		dev_err(dev, FW_BUG "failed to get TPM2 ACPI table\n");
-		return -EINVAL;
-	}
-
-	/* The tpm2_crb driver handles this device */
-	if (tbl->start_method != ACPI_TPM2_MEMORY_MAPPED)
-		ret = -ENODEV;
-
-	acpi_put_table((struct acpi_table_header *)tbl);
-	return ret;
-}
-#else
-static int check_acpi_tpm2(struct device *dev)
-{
-	return 0;
-}
 #endif
 
 static int tpm_tcg_read_bytes(struct tpm_tis_data *data, u32 addr, u16 len,
@@ -222,11 +188,12 @@ static int tpm_tis_init(struct device *dev, struct tpm_info *tpm_info)
 {
 	struct tpm_tis_tcg_phy *phy;
 	int irq = -1;
-	int rc;
 
-	rc = check_acpi_tpm2(dev);
-	if (rc)
-		return rc;
+#ifdef CONFIG_ACPI
+	if (acpi_match_device(tpm_acpi_tbl, dev) &&
+	    tpm2_acpi_start_method != ACPI_TPM2_MEMORY_MAPPED)
+		return -ENODEV;
+#endif
 
 	phy = devm_kzalloc_obj(dev, struct tpm_tis_tcg_phy);
 	if (phy == NULL)
