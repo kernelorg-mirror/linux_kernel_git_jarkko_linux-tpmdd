@@ -204,39 +204,35 @@ void tpm_buf_append_handle(struct tpm_buf *buf, u32 handle)
  * @offset:	offset within the buffer
  * @count:	the number of bytes to read
  * @output:	the output buffer
+ *
+ * Return: true on success, and @offset is advanced by @count bytes, or false
+ * if the read would cross the end of the buffer.
  */
-static void tpm_buf_read(struct tpm_buf *buf, off_t *offset, size_t count, void *output)
+static bool tpm_buf_read(struct tpm_buf *buf, off_t *offset, size_t count, void *output)
 {
 	off_t next_offset;
 
-	if (buf->flags & TPM_BUF_INVALID)
-		return;
-
 	next_offset = *offset + count;
-	if (next_offset > buf->length) {
-		WARN(1, "tpm_buf: read out of boundary\n");
-		buf->flags |= TPM_BUF_INVALID;
-		return;
-	}
+	if (next_offset > buf->length)
+		return false;
 
 	memcpy(output, &buf->data[*offset], count);
 	*offset = next_offset;
+	return true;
 }
 
 /**
  * tpm_buf_read_u8() - Read 8-bit word from a TPM buffer
  * @buf:	&tpm_buf instance
  * @offset:	offset within the buffer
+ * @value:	returns the 8-bit word
  *
- * Return: next 8-bit word
+ * Return: true on success, and @offset is advanced, or false if the read
+ * would cross the end of the buffer.
  */
-u8 tpm_buf_read_u8(struct tpm_buf *buf, off_t *offset)
+bool tpm_buf_read_u8(struct tpm_buf *buf, off_t *offset, u8 *value)
 {
-	u8 value = 0;
-
-	tpm_buf_read(buf, offset, sizeof(value), &value);
-
-	return value;
+	return tpm_buf_read(buf, offset, sizeof(*value), value);
 }
 EXPORT_SYMBOL_GPL(tpm_buf_read_u8);
 
@@ -244,16 +240,20 @@ EXPORT_SYMBOL_GPL(tpm_buf_read_u8);
  * tpm_buf_read_u16() - Read 16-bit word from a TPM buffer
  * @buf:	&tpm_buf instance
  * @offset:	offset within the buffer
+ * @value:	returns the 16-bit word
  *
- * Return: next 16-bit word
+ * Return: true on success, and @offset is advanced, or false if the read
+ * would cross the end of the buffer.
  */
-u16 tpm_buf_read_u16(struct tpm_buf *buf, off_t *offset)
+bool tpm_buf_read_u16(struct tpm_buf *buf, off_t *offset, u16 *value)
 {
-	u16 value = 0;
+	__be16 value_be;
 
-	tpm_buf_read(buf, offset, sizeof(value), &value);
+	if (!tpm_buf_read(buf, offset, sizeof(value_be), &value_be))
+		return false;
 
-	return be16_to_cpu(value);
+	*value = be16_to_cpu(value_be);
+	return true;
 }
 EXPORT_SYMBOL_GPL(tpm_buf_read_u16);
 
@@ -261,16 +261,20 @@ EXPORT_SYMBOL_GPL(tpm_buf_read_u16);
  * tpm_buf_read_u32() - Read 32-bit word from a TPM buffer
  * @buf:	&tpm_buf instance
  * @offset:	offset within the buffer
+ * @value:	returns the 32-bit word
  *
- * Return: next 32-bit word
+ * Return: true on success, and @offset is advanced, or false if the read
+ * would cross the end of the buffer.
  */
-u32 tpm_buf_read_u32(struct tpm_buf *buf, off_t *offset)
+bool tpm_buf_read_u32(struct tpm_buf *buf, off_t *offset, u32 *value)
 {
-	u32 value = 0;
+	__be32 value_be;
 
-	tpm_buf_read(buf, offset, sizeof(value), &value);
+	if (!tpm_buf_read(buf, offset, sizeof(value_be), &value_be))
+		return false;
 
-	return be32_to_cpu(value);
+	*value = be32_to_cpu(value_be);
+	return true;
 }
 EXPORT_SYMBOL_GPL(tpm_buf_read_u32);
 

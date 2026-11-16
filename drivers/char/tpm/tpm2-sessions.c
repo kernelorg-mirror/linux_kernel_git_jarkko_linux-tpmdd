@@ -179,6 +179,7 @@ int tpm2_read_public(struct tpm_chip *chip, u32 handle, void *name)
 	off_t offset = TPM_HEADER_SIZE;
 	struct tpm_buf *buf __free(kfree) = NULL;
 	int rc, name_size_alg;
+	u16 size;
 
 	if (mso != TPM2_MSO_PERSISTENT && mso != TPM2_MSO_VOLATILE &&
 	    mso != TPM2_MSO_NVRAM) {
@@ -199,8 +200,10 @@ int tpm2_read_public(struct tpm_chip *chip, u32 handle, void *name)
 		return tpm_ret_to_err(rc);
 
 	/* Skip TPMT_PUBLIC: */
-	rc = tpm_buf_read_u16(buf, &offset);
-	offset += rc;
+	if (!tpm_buf_read_u16(buf, &offset, &size))
+		return -EIO;
+
+	offset += size;
 
 	/*
 	 * Ensure space for the length field of TPM2B_NAME and hashAlg field of
@@ -209,18 +212,20 @@ int tpm2_read_public(struct tpm_chip *chip, u32 handle, void *name)
 	if (offset + 4 > tpm_buf_length(buf))
 		return -EIO;
 
-	rc = tpm_buf_read_u16(buf, &offset);
+	if (!tpm_buf_read_u16(buf, &offset, &size))
+		return -EIO;
+
 	name_size_alg = name_size(&buf->data[offset]);
 	if (name_size_alg < 0)
 		return name_size_alg;
 
-	if (rc != name_size_alg)
+	if (size != name_size_alg)
 		return -EIO;
 
-	if (offset + rc > tpm_buf_length(buf))
+	if (offset + size > tpm_buf_length(buf))
 		return -EIO;
 
-	memcpy(name, &buf->data[offset], rc);
+	memcpy(name, &buf->data[offset], size);
 	return name_size_alg;
 }
 EXPORT_SYMBOL_GPL(tpm2_read_public);
@@ -618,21 +623,41 @@ int tpm_buf_fill_hmac_session(struct tpm_chip *chip, struct tpm_buf *buf)
 	handles = (attrs >> TPM2_CC_ATTR_CHANDLES) & GENMASK(2, 0);
 	offset_s += handles * sizeof(u32);
 
-	val = tpm_buf_read_u32(buf, &offset_s);
+	if (!tpm_buf_read_u32(buf, &offset_s, &val)) {
+		ret = -EIO;
+		goto err;
+	}
+
 	/* point offset_p to the start of the parameters */
 	offset_p = offset_s + val;
 	for (i = 1; offset_s < offset_p; i++) {
-		u32 handle = tpm_buf_read_u32(buf, &offset_s);
+		u32 handle;
 		u16 len;
 		u8 a;
 
+		if (!tpm_buf_read_u32(buf, &offset_s, &handle)) {
+			ret = -EIO;
+			goto err;
+		}
+
 		/* nonce (already in auth) */
-		len = tpm_buf_read_u16(buf, &offset_s);
+		if (!tpm_buf_read_u16(buf, &offset_s, &len)) {
+			ret = -EIO;
+			goto err;
+		}
+
 		offset_s += len;
 
-		a = tpm_buf_read_u8(buf, &offset_s);
+		if (!tpm_buf_read_u8(buf, &offset_s, &a)) {
+			ret = -EIO;
+			goto err;
+		}
 
-		len = tpm_buf_read_u16(buf, &offset_s);
+		if (!tpm_buf_read_u16(buf, &offset_s, &len)) {
+			ret = -EIO;
+			goto err;
+		}
+
 		if (handle == auth->handle && auth->attrs == a) {
 			hmac = &buf->data[offset_s];
 			/*
@@ -665,7 +690,11 @@ int tpm_buf_fill_hmac_session(struct tpm_chip *chip, struct tpm_buf *buf)
 			  auth->tpm_nonce, AES_KEY_BYTES + AES_BLOCK_SIZE,
 			  auth->scratch);
 
-		len = tpm_buf_read_u16(buf, &offset_p);
+		if (!tpm_buf_read_u16(buf, &offset_p, &len)) {
+			ret = -EIO;
+			goto err;
+		}
+
 		aes_prepareenckey(&auth->aes_key, auth->scratch, AES_KEY_BYTES);
 		aescfb_encrypt(&auth->aes_key, &buf->data[offset_p],
 			       &buf->data[offset_p], len,
@@ -740,7 +769,10 @@ int tpm_buf_check_hmac_response(struct tpm_chip *chip, struct tpm_buf *buf,
 	struct sha256_ctx sctx;
 	struct hmac_sha256_ctx hctx;
 	u16 tag = be16_to_cpu(head->tag);
-	int parm_len, len, i, handles;
+	u32 parm_len;
+	int i, handles;
+	u8 session_attrs;
+	u16 len;
 
 	if (!auth)
 		return rc;
@@ -770,26 +802,38 @@ int tpm_buf_check_hmac_response(struct tpm_chip *chip, struct tpm_buf *buf,
 
 	/* point to area beyond handles */
 	offset_s = TPM_HEADER_SIZE + handles * 4;
-	parm_len = tpm_buf_read_u32(buf, &offset_s);
+	if (!tpm_buf_read_u32(buf, &offset_s, &parm_len))
+		goto out;
+
 	offset_p = offset_s;
 	offset_s += parm_len;
 	/* skip over any sessions before ours */
 	for (i = 0; i < auth->session - 1; i++) {
-		len = tpm_buf_read_u16(buf, &offset_s);
+		if (!tpm_buf_read_u16(buf, &offset_s, &len))
+			goto out;
+
 		offset_s += len + 1;
-		len = tpm_buf_read_u16(buf, &offset_s);
+		if (!tpm_buf_read_u16(buf, &offset_s, &len))
+			goto out;
+
 		offset_s += len;
 	}
 	/* TPM nonce */
-	len = tpm_buf_read_u16(buf, &offset_s);
+	if (!tpm_buf_read_u16(buf, &offset_s, &len))
+		goto out;
+
 	if (offset_s + len > tpm_buf_length(buf))
 		goto out;
 	if (len != SHA256_DIGEST_SIZE)
 		goto out;
 	memcpy(auth->tpm_nonce, &buf->data[offset_s], len);
 	offset_s += len;
-	attrs = tpm_buf_read_u8(buf, &offset_s);
-	len = tpm_buf_read_u16(buf, &offset_s);
+	if (!tpm_buf_read_u8(buf, &offset_s, &session_attrs))
+		goto out;
+
+	if (!tpm_buf_read_u16(buf, &offset_s, &len))
+		goto out;
+
 	if (offset_s + len != tpm_buf_length(buf))
 		goto out;
 	if (len != SHA256_DIGEST_SIZE)
@@ -831,8 +875,8 @@ int tpm_buf_check_hmac_response(struct tpm_chip *chip, struct tpm_buf *buf,
 			  auth->our_nonce, AES_KEY_BYTES + AES_BLOCK_SIZE,
 			  auth->scratch);
 
-		len = tpm_buf_read_u16(buf, &offset_p);
-		if (offset_p + len > tpm_buf_length(buf)) {
+		if (!tpm_buf_read_u16(buf, &offset_p, &len) ||
+		    offset_p + len > tpm_buf_length(buf)) {
 			rc = -EINVAL;
 			goto out;
 		}
@@ -888,7 +932,7 @@ static int tpm2_parse_start_auth_session(struct tpm2_auth *auth,
 	struct tpm_header *head = (struct tpm_header *)buf->data;
 	u32 tot_len = be32_to_cpu(head->length);
 	off_t offset = TPM_HEADER_SIZE;
-	u32 val;
+	u16 val;
 
 	/* we're starting after the header so adjust the length */
 	tot_len -= TPM_HEADER_SIZE;
@@ -897,8 +941,12 @@ static int tpm2_parse_start_auth_session(struct tpm2_auth *auth,
 	if (tot_len != 4 + 2 + sizeof(auth->tpm_nonce))
 		return -EINVAL;
 
-	auth->handle = tpm_buf_read_u32(buf, &offset);
-	val = tpm_buf_read_u16(buf, &offset);
+	if (!tpm_buf_read_u32(buf, &offset, &auth->handle))
+		return -EIO;
+
+	if (!tpm_buf_read_u16(buf, &offset, &val))
+		return -EIO;
+
 	if (val != sizeof(auth->tpm_nonce))
 		return -EINVAL;
 	memcpy(auth->tpm_nonce, &buf->data[offset], sizeof(auth->tpm_nonce));
@@ -1070,15 +1118,20 @@ static int tpm2_parse_create_primary(struct tpm_chip *chip, struct tpm_buf *buf,
 	off_t offset_r = TPM_HEADER_SIZE, offset_t;
 	u16 len = TPM_HEADER_SIZE;
 	u32 total_len = be32_to_cpu(head->length);
-	u32 val, param_len, keyhandle;
+	u32 val32, param_len, keyhandle;
+	u16 val;
 
-	keyhandle = tpm_buf_read_u32(buf, &offset_r);
+	if (!tpm_buf_read_u32(buf, &offset_r, &keyhandle))
+		return -EIO;
+
 	if (handle)
 		*handle = keyhandle;
 	else
 		tpm2_flush_context(chip, keyhandle);
 
-	param_len = tpm_buf_read_u32(buf, &offset_r);
+	if (!tpm_buf_read_u32(buf, &offset_r, &param_len))
+		return -EIO;
+
 	/*
 	 * param_len doesn't include the header, but all the other
 	 * lengths and offsets do, so add it to parm len to make
@@ -1088,7 +1141,10 @@ static int tpm2_parse_create_primary(struct tpm_chip *chip, struct tpm_buf *buf,
 
 	if (param_len + 8 > total_len)
 		return -EINVAL;
-	len = tpm_buf_read_u16(buf, &offset_r);
+
+	if (!tpm_buf_read_u16(buf, &offset_r, &len))
+		return -EIO;
+
 	offset_t = offset_r;
 	if (offset_r + len > tpm_buf_length(buf))
 		return -EINVAL;
@@ -1102,64 +1158,88 @@ static int tpm2_parse_create_primary(struct tpm_chip *chip, struct tpm_buf *buf,
 	}
 
 	/* validate the public key */
-	val = tpm_buf_read_u16(buf, &offset_t);
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
 
 	/* key type (must be what we asked for) */
 	if (val != TPM_ALG_ECC)
 		return -EINVAL;
-	val = tpm_buf_read_u16(buf, &offset_t);
+
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
 
 	/* name algorithm */
 	if (val != TPM_ALG_SHA256)
 		return -EINVAL;
-	val = tpm_buf_read_u32(buf, &offset_t);
+
+	if (!tpm_buf_read_u32(buf, &offset_t, &val32))
+		return -EIO;
 
 	/* object properties */
-	if (val != TPM2_OA_NULL_KEY)
+	if (val32 != TPM2_OA_NULL_KEY)
 		return -EINVAL;
 
 	/* auth policy (empty) */
-	val = tpm_buf_read_u16(buf, &offset_t);
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
+
 	if (val != 0)
 		return -EINVAL;
 
 	/* symmetric key parameters */
-	val = tpm_buf_read_u16(buf, &offset_t);
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
+
 	if (val != TPM_ALG_AES)
 		return -EINVAL;
 
 	/* symmetric key length */
-	val = tpm_buf_read_u16(buf, &offset_t);
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
+
 	if (val != AES_KEY_BITS)
 		return -EINVAL;
 
 	/* symmetric encryption scheme */
-	val = tpm_buf_read_u16(buf, &offset_t);
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
+
 	if (val != TPM_ALG_CFB)
 		return -EINVAL;
 
 	/* signing scheme */
-	val = tpm_buf_read_u16(buf, &offset_t);
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
+
 	if (val != TPM_ALG_NULL)
 		return -EINVAL;
 
 	/* ECC Curve */
-	val = tpm_buf_read_u16(buf, &offset_t);
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
+
 	if (val != TPM2_ECC_NIST_P256)
 		return -EINVAL;
 
 	/* KDF Scheme */
-	val = tpm_buf_read_u16(buf, &offset_t);
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
+
 	if (val != TPM_ALG_NULL)
 		return -EINVAL;
 
 	/* extract public key (x and y points) */
-	val = tpm_buf_read_u16(buf, &offset_t);
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
+
 	if (val != EC_PT_SZ)
 		return -EINVAL;
 	memcpy(chip->null_ec_key_x, &buf->data[offset_t], val);
 	offset_t += val;
-	val = tpm_buf_read_u16(buf, &offset_t);
+
+	if (!tpm_buf_read_u16(buf, &offset_t, &val))
+		return -EIO;
+
 	if (val != EC_PT_SZ)
 		return -EINVAL;
 	memcpy(chip->null_ec_key_y, &buf->data[offset_t], val);
@@ -1175,30 +1255,40 @@ static int tpm2_parse_create_primary(struct tpm_chip *chip, struct tpm_buf *buf,
 		return -EINVAL;
 
 	/* creation data (skip) */
-	len = tpm_buf_read_u16(buf, &offset_r);
+	if (!tpm_buf_read_u16(buf, &offset_r, &len))
+		return -EIO;
+
 	offset_r += len;
 	if (offset_r > param_len)
 		return -EINVAL;
 
 	/* creation digest (must be sha256) */
-	len = tpm_buf_read_u16(buf, &offset_r);
+	if (!tpm_buf_read_u16(buf, &offset_r, &len))
+		return -EIO;
+
 	offset_r += len;
 	if (len != SHA256_DIGEST_SIZE || offset_r > param_len)
 		return -EINVAL;
 
 	/* TPMT_TK_CREATION follows */
 	/* tag, must be TPM_ST_CREATION (0x8021) */
-	val = tpm_buf_read_u16(buf, &offset_r);
+	if (!tpm_buf_read_u16(buf, &offset_r, &val))
+		return -EIO;
+
 	if (val != TPM2_ST_CREATION || offset_r > param_len)
 		return -EINVAL;
 
 	/* hierarchy */
-	val = tpm_buf_read_u32(buf, &offset_r);
-	if (val != hierarchy || offset_r > param_len)
+	if (!tpm_buf_read_u32(buf, &offset_r, &val32))
+		return -EIO;
+
+	if (val32 != hierarchy || offset_r > param_len)
 		return -EINVAL;
 
 	/* the ticket digest HMAC (might not be sha256) */
-	len = tpm_buf_read_u16(buf, &offset_r);
+	if (!tpm_buf_read_u16(buf, &offset_r, &len))
+		return -EIO;
+
 	offset_r += len;
 	if (offset_r > param_len)
 		return -EINVAL;
@@ -1207,7 +1297,9 @@ static int tpm2_parse_create_primary(struct tpm_chip *chip, struct tpm_buf *buf,
 	 * finally we have the name, which is a sha256 digest plus a 2
 	 * byte algorithm type
 	 */
-	len = tpm_buf_read_u16(buf, &offset_r);
+	if (!tpm_buf_read_u16(buf, &offset_r, &len))
+		return -EIO;
+
 	if (offset_r + len != param_len + 8)
 		return -EINVAL;
 	if (len != SHA256_DIGEST_SIZE + 2)
