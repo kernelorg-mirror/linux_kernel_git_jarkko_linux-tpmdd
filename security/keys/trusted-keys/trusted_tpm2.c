@@ -217,6 +217,7 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 	struct tpm_buf *sized __free(kfree) = NULL;
 	u16 parent_name_size;
 	int blob_len = 0;
+	u32 size;
 	int hash;
 	u32 flags;
 	int rc;
@@ -323,18 +324,17 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 	if (rc)
 		goto out;
 
-	blob_len = tpm_buf_read_u32(buf, &offset);
-	if (buf->flags & TPM_BUF_INVALID) {
-		rc = -E2BIG;
+	if (!tpm_buf_read_u32(buf, &offset, &size)) {
+		rc = -EIO;
 		goto out;
 	}
 
-	if (buf->length - offset < blob_len) {
+	if (buf->length - offset < size) {
 		rc = -EFAULT;
 		goto out;
 	}
 
-	blob_len = tpm2_key_encode(payload, options, &buf->data[offset], blob_len);
+	blob_len = tpm2_key_encode(payload, options, &buf->data[offset], size);
 	if (blob_len < 0)
 		rc = blob_len;
 

@@ -52,9 +52,9 @@ void tpm_buf_append(struct tpm_buf *buf, const u8 *new_data, u16 new_length);
 void tpm_buf_append_u8(struct tpm_buf *buf, const u8 value);
 void tpm_buf_append_u16(struct tpm_buf *buf, const u16 value);
 void tpm_buf_append_u32(struct tpm_buf *buf, const u32 value);
-u8 tpm_buf_read_u8(struct tpm_buf *buf, off_t *offset);
-u16 tpm_buf_read_u16(struct tpm_buf *buf, off_t *offset);
-u32 tpm_buf_read_u32(struct tpm_buf *buf, off_t *offset);
+bool tpm_buf_read_u8(struct tpm_buf *buf, off_t *offset, u8 *value);
+bool tpm_buf_read_u16(struct tpm_buf *buf, off_t *offset, u16 *value);
+bool tpm_buf_read_u32(struct tpm_buf *buf, off_t *offset, u32 *value);
 void tpm_buf_append_handle(struct tpm_buf *buf, u32 handle);
 
 #endif
