@@ -117,6 +117,7 @@ TARGETS += rdma
 TARGETS += resctrl
 TARGETS += riscv
 TARGETS += rlimits
+TARGETS += rootns
 TARGETS += rseq
 TARGETS += rtc
 TARGETS += rust
