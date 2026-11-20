@@ -60,6 +60,15 @@ static inline void put_time_ns(struct time_namespace *ns)
 		free_time_ns(ns);
 }
 
+static inline void timens_activate_nsproxy(struct nsproxy *nsproxy)
+{
+	if (nsproxy->time_ns != nsproxy->time_ns_for_children) {
+		get_time_ns(nsproxy->time_ns_for_children);
+		put_time_ns(nsproxy->time_ns);
+		nsproxy->time_ns = nsproxy->time_ns_for_children;
+	}
+}
+
 void proc_timens_show_offsets(struct task_struct *p, struct seq_file *m);
 
 struct proc_timens_offset {
@@ -122,6 +131,10 @@ static inline struct time_namespace *get_time_ns(struct time_namespace *ns)
 }
 
 static inline void put_time_ns(struct time_namespace *ns)
+{
+}
+
+static inline void timens_activate_nsproxy(struct nsproxy *nsproxy)
 {
 }
 
