@@ -26,6 +26,7 @@
 #define CL_MAKE_SHARED 		0x08
 #define CL_PRIVATE 		0x10
 #define CL_COPY_MNT_NS_FILE	0x40
+#define CL_LOCK_SOURCE		0x80
 
 /*
  * EXCL[namespace_sem]
@@ -44,7 +45,7 @@ static inline bool peers(const struct mount *m1, const struct mount *m2)
 void change_mnt_propagation(struct mount *, int);
 void bulk_make_private(struct list_head *);
 int propagate_mnt(struct mount *, struct mountpoint *, struct mount *,
-		struct hlist_head *);
+		struct hlist_head *, bool);
 void propagate_umount(struct list_head *);
 int propagate_mount_busy(struct mount *, int);
 void propagate_mount_unlock(struct mount *);
