@@ -1283,6 +1283,16 @@ config NET_NS
 
 endif # NAMESPACES
 
+config ROOTNS
+	bool "Rootns process closure support"
+	depends on NAMESPACES && USER_NS && PID_NS && UTS_NS && IPC_NS && NET_NS && CGROUPS
+	help
+	  Allow user space to create and manage isolated namespace sets and
+	  their init process lifecycle through an anonymous-inode control file
+	  descriptor via rootns(), waitid(P_ROOTNS), pidfd_send_signal(),
+	  ROOTNS_GET_NSFD, FSCONFIG_SET_ROOTNS, and clone3() with
+	  CLONE_INTO_ROOTNS.
+
 config CHECKPOINT_RESTORE
 	bool "Checkpoint/restore support"
 	depends on PROC_FS
