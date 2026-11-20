@@ -44,6 +44,59 @@ struct mnt_ns_info {
 #define NS_GET_MNTNS_ID		_IOR(NSIO, 5,  __u64)
 #define NS_GET_ID		_IOR(NSIO, 13, __u64)
 
+/**
+ * struct userns_idmap_extent - Single ID mapping range for userns_set_idmap()
+ * @first: First ID inside the target user namespace.
+ * @lower_first: First ID inside the parent user namespace.
+ * @count: Number of consecutive IDs in the range.
+ * @reserved: Reserved for future use; must be zero.
+ */
+struct userns_idmap_extent {
+	__u32 first;
+	__u32 lower_first;
+	__u32 count;
+	__u32 reserved;
+};
+
+/**
+ * enum userns_idmap_flags - Flags for &struct userns_idmap
+ * @USERNS_IDMAP_UID: Install UID mappings from @uid_extents.
+ * @USERNS_IDMAP_GID: Install GID mappings from @gid_extents.
+ * @USERNS_IDMAP_PROJID: Install project ID mappings from @projid_extents.
+ * @USERNS_SETGROUPS_DENY: Permanently disable setgroups(2) in target userns.
+ * @USERNS_IDMAP_ALL_FLAGS: Bitmask of all valid flags.
+ */
+enum userns_idmap_flags {
+	USERNS_IDMAP_UID		= (1U << 0),
+	USERNS_IDMAP_GID		= (1U << 1),
+	USERNS_IDMAP_PROJID		= (1U << 2),
+	USERNS_SETGROUPS_DENY		= (1U << 3),
+	USERNS_IDMAP_ALL_FLAGS		= 0x0fU,
+};
+
+/**
+ * struct userns_idmap - Arguments for userns_set_idmap()
+ * @flags: Combination of &enum userns_idmap_flags values.
+ * @nr_uid_extents: Number of entries in @uid_extents.
+ * @uid_extents: User pointer to array of &struct userns_idmap_extent for UIDs.
+ * @nr_gid_extents: Number of entries in @gid_extents.
+ * @nr_projid_extents: Number of entries in @projid_extents.
+ * @gid_extents: User pointer to array of &struct userns_idmap_extent for GIDs.
+ * @projid_extents: User pointer to array of &struct userns_idmap_extent for
+ *                  project IDs.
+ */
+struct userns_idmap {
+	__u32 flags;
+	__u32 nr_uid_extents;
+	__aligned_u64 uid_extents;
+	__u32 nr_gid_extents;
+	__u32 nr_projid_extents;
+	__aligned_u64 gid_extents;
+	__aligned_u64 projid_extents;
+};
+
+#define USERNS_IDMAP_SIZE_VER0 40 /* sizeof first published struct */
+
 enum init_ns_ino {
 	IPC_NS_INIT_INO		= 0xEFFFFFFFU,
 	UTS_NS_INIT_INO		= 0xEFFFFFFEU,

@@ -22,7 +22,11 @@
 #include <linux/fs_struct.h>
 #include <linux/bsearch.h>
 #include <linux/sort.h>
+#include <linux/file.h>
 #include <linux/nstree.h>
+#include <linux/proc_fs.h>
+#include <linux/syscalls.h>
+#include <uapi/linux/nsfs.h>
 
 static struct kmem_cache *user_ns_cachep __ro_after_init;
 static DEFINE_MUTEX(userns_state_mutex);
@@ -1147,6 +1151,261 @@ out:
 	free_new_idmap(&new_map);
 	mutex_unlock(&userns_state_mutex);
 	kfree(kbuf);
+	return ret;
+}
+
+static bool idmap_maps_root(const struct uid_gid_map *new_map)
+{
+	unsigned int idx;
+
+	for (idx = 0; idx < new_map->nr_extents; idx++) {
+		const struct uid_gid_extent *e;
+
+		if (new_map->nr_extents <= UID_GID_MAP_MAX_BASE_EXTENTS)
+			e = &new_map->extent[idx];
+		else
+			e = &new_map->forward[idx];
+		if (e->lower_first == 0)
+			return true;
+	}
+	return false;
+}
+
+static bool caller_idmap_permitted(struct user_namespace *ns, int cap_setid,
+				   const struct uid_gid_map *new_map)
+{
+	const struct cred *cred = current_cred();
+
+	if (cap_setid == CAP_SETUID && idmap_maps_root(new_map)) {
+		if (cred->user_ns == ns) {
+			if (!ns->parent_could_setfcap)
+				return false;
+		} else {
+			if (!ns_capable(ns->parent, CAP_SETFCAP))
+				return false;
+		}
+	}
+
+	if (new_map->nr_extents == 1 && new_map->extent[0].count == 1 &&
+	    uid_eq(ns->owner, cred->euid)) {
+		u32 id = new_map->extent[0].lower_first;
+
+		if (cap_setid == CAP_SETUID) {
+			kuid_t uid = make_kuid(ns->parent, id);
+
+			if (uid_eq(uid, cred->euid))
+				return true;
+		} else if (cap_setid == CAP_SETGID) {
+			kgid_t gid = make_kgid(ns->parent, id);
+
+			if (!(ns->flags & USERNS_SETGROUPS_ALLOWED) &&
+			    gid_eq(gid, cred->egid))
+				return true;
+		}
+	}
+
+	if (!cap_valid(cap_setid))
+		return true;
+
+	return ns_capable(ns->parent, cap_setid);
+}
+
+static int prepare_caller_idmap(struct user_namespace *ns, int cap_setid,
+				struct uid_gid_map *new_map,
+				struct uid_gid_map *parent_map)
+{
+	if (!caller_idmap_permitted(ns, cap_setid, new_map))
+		return -EPERM;
+
+	return resolve_new_idmap(new_map, parent_map);
+}
+
+static int parse_user_idmap_extents(__u64 uptr, __u32 nr_extents,
+				    struct uid_gid_map *new_map)
+{
+	const struct userns_idmap_extent __user *uext = u64_to_user_ptr(uptr);
+	unsigned int i;
+	int ret;
+
+	if (!nr_extents || nr_extents > UID_GID_MAP_MAX_EXTENTS || !uptr)
+		return -EINVAL;
+
+	for (i = 0; i < nr_extents; i++) {
+		struct userns_idmap_extent kext;
+		struct uid_gid_extent extent;
+
+		if (copy_from_user(&kext, &uext[i], sizeof(kext)))
+			return -EFAULT;
+		if (kext.reserved)
+			return -EINVAL;
+
+		extent.first = kext.first;
+		extent.lower_first = kext.lower_first;
+		extent.count = kext.count;
+
+		ret = validate_and_insert_extent(new_map, &extent);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
+
+/**
+ * sys_userns_set_idmap - Configure ID mappings on a user namespace fd
+ * @fd: File descriptor referencing a %CLONE_NEWUSER ``nsfs`` namespace
+ * @map: User pointer to &struct userns_idmap configuration
+ * @size: Size of @map structure in bytes (>= %USERNS_IDMAP_SIZE_VER0)
+ * @flags: Reserved for future extensions; must be zero
+ *
+ * Atomically configure the ``setgroups(2)`` policy and UID, GID, and project
+ * ID mappings of the target user namespace without requiring a live process
+ * in ``/proc``.
+ *
+ * Modifying UID, GID, or ``setgroups(2)`` settings requires ``CAP_SYS_ADMIN``
+ * over the target user namespace either in the caller's credentials or in the
+ * file opener's credentials (allowing an unprivileged creator to delegate
+ * @fd over ``SCM_RIGHTS`` to a privileged ID-mapping helper). Parent ID-range
+ * authorization is checked against the caller's credentials.
+ *
+ * Return: 0 on success, negative error code on failure.
+ */
+SYSCALL_DEFINE4(userns_set_idmap, int, fd,
+		const struct userns_idmap __user *, map,
+		size_t, size, unsigned int, flags)
+{
+	struct uid_gid_map new_uid = {}, new_gid = {}, new_projid = {};
+	struct userns_idmap req = {};
+	struct ns_common *ns_common;
+	struct user_namespace *ns;
+	unsigned long old_flags;
+	struct file *filp;
+	int ret;
+
+	BUILD_BUG_ON(sizeof(struct userns_idmap) != USERNS_IDMAP_SIZE_VER0);
+
+	if (flags)
+		return -EINVAL;
+
+	CLASS(fd, f)(fd);
+	if (fd_empty(f))
+		return -EBADF;
+
+	filp = fd_file(f);
+	if (!proc_ns_file(filp))
+		return -EINVAL;
+
+	ns_common = get_proc_ns(file_inode(filp));
+	if (ns_common->ns_type != CLONE_NEWUSER)
+		return -EINVAL;
+	ns = to_user_ns(ns_common);
+
+	if (!map || size < USERNS_IDMAP_SIZE_VER0)
+		return -EINVAL;
+
+	ret = copy_struct_from_user(&req, sizeof(req), map, size);
+	if (ret)
+		return ret;
+
+	if (!req.flags || (req.flags & ~USERNS_IDMAP_ALL_FLAGS))
+		return -EINVAL;
+	if (!(req.flags & USERNS_IDMAP_UID) &&
+	    (req.nr_uid_extents || req.uid_extents))
+		return -EINVAL;
+	if (!(req.flags & USERNS_IDMAP_GID) &&
+	    (req.nr_gid_extents || req.gid_extents))
+		return -EINVAL;
+	if (!(req.flags & USERNS_IDMAP_PROJID) &&
+	    (req.nr_projid_extents || req.projid_extents))
+		return -EINVAL;
+
+	if (!ns->parent)
+		return -EPERM;
+	if (current_user_ns() != ns && current_user_ns() != ns->parent)
+		return -EPERM;
+
+	if (req.flags & (USERNS_IDMAP_UID | USERNS_IDMAP_GID |
+			 USERNS_SETGROUPS_DENY)) {
+		bool file_ok = (filp->f_cred->user_ns == ns ||
+				filp->f_cred->user_ns == ns->parent) &&
+			       file_ns_capable(filp, ns, CAP_SYS_ADMIN);
+
+		if (!ns_capable(ns, CAP_SYS_ADMIN) && !file_ok)
+			return -EPERM;
+	}
+
+	if (req.flags & USERNS_IDMAP_UID) {
+		ret = parse_user_idmap_extents(req.uid_extents,
+					       req.nr_uid_extents, &new_uid);
+		if (ret < 0)
+			goto out_free;
+	}
+	if (req.flags & USERNS_IDMAP_GID) {
+		ret = parse_user_idmap_extents(req.gid_extents,
+					       req.nr_gid_extents, &new_gid);
+		if (ret < 0)
+			goto out_free;
+	}
+	if (req.flags & USERNS_IDMAP_PROJID) {
+		ret = parse_user_idmap_extents(req.projid_extents,
+					       req.nr_projid_extents,
+					       &new_projid);
+		if (ret < 0)
+			goto out_free;
+	}
+
+	mutex_lock(&userns_state_mutex);
+	old_flags = ns->flags;
+	ret = -EPERM;
+
+	if ((req.flags & USERNS_SETGROUPS_DENY) && ns->gid_map.nr_extents != 0)
+		goto out_unlock;
+	if ((req.flags & USERNS_IDMAP_UID) && ns->uid_map.nr_extents != 0)
+		goto out_unlock;
+	if ((req.flags & USERNS_IDMAP_GID) && ns->gid_map.nr_extents != 0)
+		goto out_unlock;
+	if ((req.flags & USERNS_IDMAP_PROJID) && ns->projid_map.nr_extents != 0)
+		goto out_unlock;
+
+	if (req.flags & USERNS_SETGROUPS_DENY)
+		ns->flags &= ~USERNS_SETGROUPS_ALLOWED;
+
+	if (req.flags & USERNS_IDMAP_UID) {
+		ret = prepare_caller_idmap(ns, CAP_SETUID, &new_uid,
+					   &ns->parent->uid_map);
+		if (ret < 0)
+			goto out_restore;
+	}
+	if (req.flags & USERNS_IDMAP_GID) {
+		ret = prepare_caller_idmap(ns, CAP_SETGID, &new_gid,
+					   &ns->parent->gid_map);
+		if (ret < 0)
+			goto out_restore;
+	}
+	if (req.flags & USERNS_IDMAP_PROJID) {
+		ret = prepare_caller_idmap(ns, -1, &new_projid,
+					   &ns->parent->projid_map);
+		if (ret < 0)
+			goto out_restore;
+	}
+
+	if (req.flags & USERNS_IDMAP_UID)
+		commit_new_idmap(&ns->uid_map, &new_uid);
+	if (req.flags & USERNS_IDMAP_GID)
+		commit_new_idmap(&ns->gid_map, &new_gid);
+	if (req.flags & USERNS_IDMAP_PROJID)
+		commit_new_idmap(&ns->projid_map, &new_projid);
+
+	mutex_unlock(&userns_state_mutex);
+	return 0;
+
+out_restore:
+	ns->flags = old_flags;
+out_unlock:
+	mutex_unlock(&userns_state_mutex);
+out_free:
+	free_new_idmap(&new_uid);
+	free_new_idmap(&new_gid);
+	free_new_idmap(&new_projid);
 	return ret;
 }
 
