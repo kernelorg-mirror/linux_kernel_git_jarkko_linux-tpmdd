@@ -36,6 +36,9 @@ enum rootns_state {
 struct rootns {
 	refcount_t		usage;
 	int			exit_code;	/* The exit code of 'init' */
+#ifdef CONFIG_SECURITY
+	void			*security;	/* LSM security blob */
+#endif
 	struct user_namespace	*user_ns;	/* Owning user namespace */
 	struct nsproxy		*ns;		/* This rootns's namespaces */
 	struct pid		*init_pid;	/* The 'init' task's TGID (pid ref) */

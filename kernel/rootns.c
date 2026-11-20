@@ -54,6 +54,7 @@
 #include <linux/time_namespace.h>
 #include <linux/user_namespace.h>
 #include <linux/idr.h>
+#include <linux/security.h>
 #include <linux/idr.h>
 #include <uapi/linux/rootns.h>
 
@@ -68,14 +69,8 @@ struct rootns *get_rootns(struct rootns *c)
 	return c;
 }
 
-/*
- * Drop a reference on a rootns and clear it if it is no longer in use.
- */
-void put_rootns(struct rootns *c)
+static void free_rootns(struct rootns *c)
 {
-	if (!c || !refcount_dec_and_test(&c->usage))
-		return;
-
 	if (c->ns)
 		put_nsproxy(c->ns);
 	if (c->init_pid)
@@ -85,6 +80,18 @@ void put_rootns(struct rootns *c)
 		put_user_ns(c->user_ns);
 	}
 	kfree(c);
+}
+
+/*
+ * Drop a reference on a rootns and clear it if it is no longer in use.
+ */
+void put_rootns(struct rootns *c)
+{
+	if (!c || !refcount_dec_and_test(&c->usage))
+		return;
+
+	security_rootns_free(c);
+	free_rootns(c);
 }
 
 /*
@@ -230,6 +237,7 @@ int rootns_send_signal(struct file *file, int sig, struct siginfo __user *info,
 	bool any_perm = false;
 	int other_err = 0;
 	struct pid *pid;
+	int ret;
 	int nr;
 
 	if (info || flags || sig < 0 || !valid_signal(sig))
@@ -238,6 +246,10 @@ int rootns_send_signal(struct file *file, int sig, struct siginfo __user *info,
 		return -EXDEV;
 	if (READ_ONCE(rootns->state) != ROOTNS_RUNNING)
 		return -ESRCH;
+
+	ret = security_rootns_kill(rootns, sig);
+	if (ret)
+		return ret;
 
 	scoped_guard(rcu) {
 		read_lock(&tasklist_lock);
@@ -414,31 +426,35 @@ static struct rootns *create_rootns(unsigned int flags)
 	user_ns = create_rootns_user_ns();
 	if (IS_ERR(user_ns)) {
 		ret = PTR_ERR(user_ns);
-		goto err_put;
+		goto err_free;
 	}
 	c->user_ns = user_ns;
 	ns_ref_active_get(user_ns);
 
 	if (!ns_capable(user_ns, CAP_SYS_ADMIN)) {
 		ret = -EPERM;
-		goto err_put;
+		goto err_free;
 	}
 
 	ns = create_new_namespaces(clone_flags, current->nsproxy, user_ns,
 				   NULL);
 	if (IS_ERR(ns)) {
 		ret = PTR_ERR(ns);
-		goto err_put;
+		goto err_free;
 	}
 
 	timens_activate_nsproxy(ns);
 	c->ns = ns;
 	nsproxy_ns_active_get(ns);
 
+	ret = security_rootns_alloc(c, flags);
+	if (ret < 0)
+		goto err_free;
+
 	return c;
 
-err_put:
-	put_rootns(c);
+err_free:
+	free_rootns(c);
 	return ERR_PTR(ret);
 }
 
@@ -533,6 +549,10 @@ int rootns_prepare_fork(struct kernel_clone_args *args)
 	pid_ns = rootns->ns->pid_ns_for_children;
 	if (!pidns_is_ancestor(pid_ns, task_active_pid_ns(current)))
 		return -EXDEV;
+
+	ret = security_rootns_clone(rootns);
+	if (ret)
+		return ret;
 
 	ret = mnt_ns_get_root(rootns->ns->mnt_ns, &root);
 	if (ret)

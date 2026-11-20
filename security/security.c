@@ -30,6 +30,7 @@
 #include <linux/overflow.h>
 #include <linux/perf_event.h>
 #include <linux/fs.h>
+#include <linux/rootns.h>
 #include <net/flow.h>
 #include <net/sock.h>
 
@@ -394,6 +395,22 @@ static int lsm_ns_alloc(struct ns_common *ns)
 {
 	return lsm_blob_alloc(&ns->ns_security, blob_sizes.lbs_ns, GFP_KERNEL);
 }
+
+#ifdef CONFIG_ROOTNS
+/**
+ * lsm_rootns_alloc - allocate a composite rootns blob
+ * @rootns: the rootns that needs a blob
+ *
+ * Allocate the rootns blob for all the modules
+ *
+ * Return: Returns 0, or -ENOMEM if memory can't be allocated.
+ */
+static int lsm_rootns_alloc(struct rootns *rootns)
+{
+	return lsm_blob_alloc(&rootns->security, blob_sizes.lbs_rootns,
+			      GFP_KERNEL);
+}
+#endif /* CONFIG_ROOTNS */
 
 /**
  * lsm_fill_user_ctx - Fill a user space lsm_ctx structure
@@ -5795,3 +5812,72 @@ void security_initramfs_populated(void)
 {
 	call_void_hook(initramfs_populated);
 }
+
+#ifdef CONFIG_ROOTNS
+/**
+ * security_rootns_alloc() - Check creation of a new rootns and init LSM blob
+ * @rootns: the new rootns
+ * @flags: creation flags passed to rootns()
+ *
+ * Check whether a new rootns may be created and initialize its LSM security
+ * blob.
+ *
+ * Return: Returns 0 on success, negative error code on failure.
+ */
+int security_rootns_alloc(struct rootns *rootns, unsigned int flags)
+{
+	int rc;
+
+	rc = lsm_rootns_alloc(rootns);
+	if (unlikely(rc))
+		return rc;
+
+	rc = call_int_hook(rootns_alloc, rootns, flags);
+	if (unlikely(rc))
+		security_rootns_free(rootns);
+
+	return rc;
+}
+
+/**
+ * security_rootns_free() - Release LSM security data from a rootns
+ * @rootns: the rootns being freed
+ *
+ * Release security data attached to @rootns before the structure is freed.
+ */
+void security_rootns_free(struct rootns *rootns)
+{
+	call_void_hook(rootns_free, rootns);
+	kfree(rootns->security);
+	rootns->security = NULL;
+}
+
+/**
+ * security_rootns_clone() - Check permission to spawn a task into a rootns
+ * @rootns: the target rootns
+ *
+ * Check permission before spawning a child process into @rootns via
+ * clone3(CLONE_INTO_ROOTNS).
+ *
+ * Return: Returns 0 if permission is granted, negative error code on failure.
+ */
+int security_rootns_clone(struct rootns *rootns)
+{
+	return call_int_hook(rootns_clone, rootns);
+}
+
+/**
+ * security_rootns_kill() - Check permission to signal a rootns
+ * @rootns: the target rootns
+ * @sig: signal number to deliver (or 0 for permission check)
+ *
+ * Check permission before broadcasting @sig to member thread groups in @rootns
+ * via pidfd_send_signal().
+ *
+ * Return: Returns 0 if permission is granted, negative error code on failure.
+ */
+int security_rootns_kill(struct rootns *rootns, int sig)
+{
+	return call_int_hook(rootns_kill, rootns, sig);
+}
+#endif /* CONFIG_ROOTNS */

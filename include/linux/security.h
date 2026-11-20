@@ -84,6 +84,7 @@ struct audit_krule;
 struct ns_common;
 struct user_namespace;
 struct timezone;
+struct rootns;
 
 enum lsm_event {
 	LSM_POLICY_CHANGE,
@@ -2468,5 +2469,34 @@ static inline void security_initramfs_populated(void)
 {
 }
 #endif /* CONFIG_SECURITY */
+
+#ifdef CONFIG_ROOTNS
+#ifdef CONFIG_SECURITY
+int security_rootns_alloc(struct rootns *rootns, unsigned int flags);
+void security_rootns_free(struct rootns *rootns);
+int security_rootns_clone(struct rootns *rootns);
+int security_rootns_kill(struct rootns *rootns, int sig);
+#else
+static inline int security_rootns_alloc(struct rootns *rootns,
+					unsigned int flags)
+{
+	return 0;
+}
+
+static inline void security_rootns_free(struct rootns *rootns)
+{
+}
+
+static inline int security_rootns_clone(struct rootns *rootns)
+{
+	return 0;
+}
+
+static inline int security_rootns_kill(struct rootns *rootns, int sig)
+{
+	return 0;
+}
+#endif /* CONFIG_SECURITY */
+#endif /* CONFIG_ROOTNS */
 
 #endif /* ! __LINUX_SECURITY_H */
