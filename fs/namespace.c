@@ -4699,16 +4699,19 @@ SYSCALL_DEFINE3(fsmount, int, fs_fd, unsigned int, flags,
 	struct vfsmount *new_mnt;
 	struct mount *mnt;
 	unsigned int mnt_flags = 0;
+	bool priv;
 	long ret;
 
 	if ((flags & ~(FSMOUNT_CLOEXEC | FSMOUNT_NAMESPACE)) != 0)
 		return -EINVAL;
 
+	priv = may_mount();
 	if ((flags & FSMOUNT_NAMESPACE) &&
 	    !ns_capable(current_user_ns(), CAP_SYS_ADMIN))
 		return -EPERM;
 
-	if (!(flags & FSMOUNT_NAMESPACE) && !may_mount())
+	if (!(flags & FSMOUNT_NAMESPACE) && !IS_ENABLED(CONFIG_ROOTNS) &&
+	    !priv)
 		return -EPERM;
 
 	if (attr_flags & ~FSMOUNT_VALID_FLAGS)
@@ -4742,6 +4745,15 @@ SYSCALL_DEFINE3(fsmount, int, fs_fd, unsigned int, flags,
 	ret = ACQUIRE_ERR(mutex_intr, &uapi_mutex);
 	if (ret)
 		return ret;
+
+	if (fc->rootns_bound) {
+		if (flags & FSMOUNT_NAMESPACE)
+			return -EINVAL;
+		if (!ns_capable(fc->user_ns, CAP_SYS_ADMIN))
+			return -EPERM;
+	} else if (!(flags & FSMOUNT_NAMESPACE) && !priv) {
+		return -EPERM;
+	}
 
 	/* There must be a valid superblock or we can't mount it */
 	ret = -EINVAL;
@@ -4784,9 +4796,12 @@ SYSCALL_DEFINE3(fsmount, int, fs_fd, unsigned int, flags,
 		return FD_ADD((flags & FSMOUNT_CLOEXEC) ? O_CLOEXEC : 0,
 			      open_new_namespace(&new_path, MOUNT_COPY_NEW));
 
-	ns = alloc_mnt_ns(current->nsproxy->mnt_ns->user_ns, true);
+	ns = alloc_mnt_ns(fc->rootns_bound ? fc->user_ns :
+			  current->nsproxy->mnt_ns->user_ns, true);
 	if (IS_ERR(ns))
 		return PTR_ERR(ns);
+	if (fc->rootns_bound)
+		ns->seq_origin = fc->rootns_mnt_id;
 	mnt = real_mount(new_path.mnt);
 	ns->root = mnt;
 	ns->nr_mounts = 1;
