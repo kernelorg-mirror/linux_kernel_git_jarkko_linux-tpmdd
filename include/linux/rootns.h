@@ -16,8 +16,10 @@ struct file;
 struct nsproxy;
 struct pid;
 struct pid_namespace;
+struct rusage;
 struct task_struct;
 struct user_namespace;
+struct waitid_info;
 
 enum rootns_state {
 	ROOTNS_INIT	= 0,
@@ -49,6 +51,8 @@ bool is_rootns_file(struct file *file);
 void copy_rootns(struct task_struct *tsk, struct pid *pid,
 		 struct rootns *rootns);
 void exit_rootns(struct pid_namespace *pid_ns, struct task_struct *tsk);
+long rootns_waitid(int upid, struct waitid_info *infop, int options,
+		   struct rusage *ru);
 #else
 static inline struct rootns *get_rootns(struct rootns *c)
 {
@@ -72,6 +76,12 @@ static inline void copy_rootns(struct task_struct *tsk, struct pid *pid,
 static inline void exit_rootns(struct pid_namespace *pid_ns,
 			       struct task_struct *tsk)
 {
+}
+
+static inline long rootns_waitid(int upid, struct waitid_info *infop,
+				 int options, struct rusage *ru)
+{
+	return -EINVAL;
 }
 #endif /* CONFIG_ROOTNS */
 

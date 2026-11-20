@@ -35,6 +35,7 @@
 #include <linux/wait.h>
 #include <uapi/linux/wait.h>
 #include <linux/file.h>
+#include <linux/freezer.h>
 #include <linux/fs.h>
 #include <linux/anon_inodes.h>
 #include <linux/rootns.h>
@@ -53,6 +54,8 @@
 #include <linux/user_namespace.h>
 #include <linux/idr.h>
 #include <uapi/linux/rootns.h>
+
+#include "exit.h"
 
 /*
  * Get a reference to a rootns.
@@ -114,6 +117,89 @@ static long rootns_get_nsfd(struct rootns *rootns, unsigned long nstype)
 	}
 
 	return nsproxy_open_namespace(rootns->ns, rootns->user_ns, nstype);
+}
+
+/**
+ * DOC: P_ROOTNS
+ *
+ * ``waitid(P_ROOTNS, rootns_fd, &infop, options, NULL)`` waits freezably and
+ * interruptibly (unless ``WNOHANG`` is set in ``options`` or ``O_NONBLOCK`` is
+ * set on ``rootns_fd``) until ``rootns_fd`` reaches ``ROOTNS_DEAD``, then writes
+ * the recorded exit information of ``rootns`` init into ``infop`` without
+ * consuming it.
+ *
+ * ``options`` must include ``WEXITED`` and may optionally include ``WNOHANG``
+ * and ``WNOWAIT``; ``rusage`` must be ``NULL``.
+ *
+ * Returns ``0`` on success (leaving ``infop->si_signo`` and ``infop->si_pid``
+ * zero when ``WNOHANG`` is set and the ``rootns`` is still running), or ``-1``
+ * with ``errno`` set to ``EBADF`` if ``rootns_fd`` is not an open ``rootns``
+ * file descriptor, ``EAGAIN`` if ``O_NONBLOCK`` is set without ``WNOHANG``
+ * while running, ``ECHILD`` if init was never started or is not visible in the
+ * caller's active PID namespace, or ``EINVAL`` for unsupported arguments.
+ */
+long rootns_waitid(int upid, struct waitid_info *infop, int options,
+		   struct rusage *ru)
+{
+	struct pid_namespace *pid_ns;
+	unsigned int f_flags;
+	struct rootns *rootns;
+	bool nonblock;
+	int status;
+	kuid_t uid;
+	long ret;
+
+	if (upid < 0 || ru)
+		return -EINVAL;
+	if (options & ~(WEXITED | WNOHANG | WNOWAIT))
+		return -EINVAL;
+	if (!(options & WEXITED))
+		return -EINVAL;
+
+	CLASS(fd, f)(upid);
+	if (fd_empty(f) || !is_rootns_file(fd_file(f)))
+		return -EBADF;
+
+	f_flags = READ_ONCE(fd_file(f)->f_flags);
+	nonblock = (options & WNOHANG) || (f_flags & O_NONBLOCK);
+	rootns = fd_file(f)->private_data;
+	pid_ns = task_active_pid_ns(current);
+
+	if (!pidns_is_ancestor(rootns->ns->pid_ns_for_children, pid_ns))
+		return -ECHILD;
+	if (READ_ONCE(rootns->state) == ROOTNS_INIT)
+		return -ECHILD;
+
+	if (!nonblock) {
+		ret = wait_event_freezable(rootns->waitq,
+					   READ_ONCE(rootns->state) == ROOTNS_DEAD ||
+					   READ_ONCE(rootns->state) == ROOTNS_INIT);
+		if (ret)
+			return ret;
+	}
+
+	scoped_guard(spinlock, &rootns->lock) {
+		if (rootns->state == ROOTNS_INIT)
+			return -ECHILD;
+		if (rootns->state != ROOTNS_DEAD)
+			return (options & WNOHANG) ? 0 : -EAGAIN;
+		ret = pid_nr_ns(rootns->init_pid, pid_ns);
+		if (ret <= 0)
+			return -ECHILD;
+		status = rootns->exit_code;
+		uid = rootns->init_uid;
+	}
+
+	if ((status & 0x7f) == 0) {
+		infop->cause = CLD_EXITED;
+		infop->status = status >> 8;
+	} else {
+		infop->cause = (status & 0x80) ? CLD_DUMPED : CLD_KILLED;
+		infop->status = status & 0x7f;
+	}
+	infop->pid = ret;
+	infop->uid = from_kuid_munged(current_user_ns(), uid);
+	return ret;
 }
 
 static long rootns_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
