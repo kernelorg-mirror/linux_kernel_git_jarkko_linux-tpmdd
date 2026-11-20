@@ -20,6 +20,7 @@ struct nsproxy;
 struct pid;
 struct pid_namespace;
 struct rusage;
+struct siginfo;
 struct task_struct;
 struct user_namespace;
 struct waitid_info;
@@ -79,6 +80,8 @@ void userland_copy(struct pid *pid, struct userland *userland);
 void userland_exit(struct pid_namespace *pid_ns, struct task_struct *tsk);
 long userland_waitid(int upid, struct waitid_info *infop, int options,
 		     struct rusage *ru);
+int userland_send_signal(struct file *file, int sig,
+			 struct siginfo __user *info, unsigned int flags);
 #else
 static inline void userland_put(struct userland *c)
 {
@@ -102,6 +105,13 @@ static inline long userland_waitid(int upid, struct waitid_info *infop,
 				   int options, struct rusage *ru)
 {
 	return -EINVAL;
+}
+
+static inline int userland_send_signal(struct file *file, int sig,
+				       struct siginfo __user *info,
+				       unsigned int flags)
+{
+	return -EBADF;
 }
 #endif /* CONFIG_USERLAND */
 
