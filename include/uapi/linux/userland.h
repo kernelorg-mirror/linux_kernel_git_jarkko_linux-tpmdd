@@ -7,6 +7,8 @@
 #ifndef _UAPI_LINUX_USERLAND_H
 #define _UAPI_LINUX_USERLAND_H
 
+#include <linux/ioctl.h>
+
 /**
  * enum userland_flags - Flags for userland_open()
  * @USERLAND_KILL_ON_CLOSE:	Send %SIGKILL to userland init on final fd
@@ -20,5 +22,22 @@ enum userland_flags {
 	USERLAND_KILL_ON_CLOSE	= 0x00000001,
 	USERLAND_CLOEXEC	= 0x00000002,
 };
+
+#define USERLAND_IOCTL_MAGIC	0xB9
+
+/**
+ * DOC: USERLAND_GET_NSFD
+ *
+ * ``ioctl(userland_fd, USERLAND_GET_NSFD, nstype)`` opens an ``nsfs`` file
+ * descriptor (with ``O_CLOEXEC``) for the member namespace identified by
+ * ``nstype`` (one of ``CLONE_NEWNS``, ``CLONE_NEWCGROUP``,
+ * ``CLONE_NEWUTS``, ``CLONE_NEWIPC``, ``CLONE_NEWUSER``, ``CLONE_NEWPID``,
+ * ``CLONE_NEWNET``, or ``CLONE_NEWTIME``).
+ *
+ * Requires ``CAP_SYS_ADMIN`` in the userland's user namespace.
+ * Opening ``CLONE_NEWPID`` additionally requires running in an ancestor
+ * active PID namespace and that userland init is running.
+ */
+#define USERLAND_GET_NSFD	_IO(USERLAND_IOCTL_MAGIC, 0x01)
 
 #endif /* _UAPI_LINUX_USERLAND_H */
