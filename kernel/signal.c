@@ -37,6 +37,7 @@
 #include <linux/capability.h>
 #include <linux/freezer.h>
 #include <linux/pid_namespace.h>
+#include <linux/rootns.h>
 #include <linux/nsproxy.h>
 #include <linux/user_namespace.h>
 #include <linux/uprobes.h>
@@ -4180,6 +4181,9 @@ SYSCALL_DEFINE4(pidfd_send_signal, int, pidfd, int, sig,
 		CLASS(fd, f)(pidfd);
 		if (fd_empty(f))
 			return -EBADF;
+
+		if (is_rootns_file(fd_file(f)))
+			return rootns_send_signal(fd_file(f), sig, info, flags);
 
 		/* Is this a pidfd? */
 		pid = pidfd_to_pid(fd_file(f));

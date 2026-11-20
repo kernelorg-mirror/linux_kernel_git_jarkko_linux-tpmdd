@@ -53,6 +53,7 @@
 #include <linux/time_namespace.h>
 #include <linux/user_namespace.h>
 #include <linux/idr.h>
+#include <linux/idr.h>
 #include <uapi/linux/rootns.h>
 
 #include "exit.h"
@@ -200,6 +201,73 @@ long rootns_waitid(int upid, struct waitid_info *infop, int options,
 	infop->pid = ret;
 	infop->uid = from_kuid_munged(current_user_ns(), uid);
 	return ret;
+}
+
+/**
+ * DOC: pidfd_send_signal
+ *
+ * ``pidfd_send_signal(rootns_fd, sig, NULL, 0)`` walks the target ``rootns``
+ * PID namespace IDR under ``tasklist_lock`` and delivers ``sig`` (or ``0`` for
+ * a permission and existence probe) once to each member thread group.
+ *
+ * ``info`` must be ``NULL`` and ``flags`` must be ``0``.
+ *
+ * Returns ``0`` if at least one thread group was signaled, or ``-1`` with
+ * ``errno`` set to ``EBADF`` if ``rootns_fd`` is not an open ``pidfd`` or
+ * ``rootns`` file descriptor, ``EINVAL`` for invalid ``sig``, non-``NULL``
+ * ``info``, or non-zero ``flags``, ``EXDEV`` if the caller's active PID
+ * namespace is not an ancestor, or ``ESRCH`` if the ``rootns`` is not running
+ * or has no members.
+ */
+int rootns_send_signal(struct file *file, int sig, struct siginfo __user *info,
+		       unsigned int flags)
+{
+	struct rootns *rootns = file->private_data;
+	struct pid_namespace *pid_ns = rootns->ns->pid_ns_for_children;
+	bool any_success = false;
+	bool any_other = false;
+	bool any_perm = false;
+	int other_err = 0;
+	struct pid *pid;
+	int nr;
+
+	if (info || flags || sig < 0 || !valid_signal(sig))
+		return -EINVAL;
+	if (!pidns_is_ancestor(pid_ns, task_active_pid_ns(current)))
+		return -EXDEV;
+	if (READ_ONCE(rootns->state) != ROOTNS_RUNNING)
+		return -ESRCH;
+
+	scoped_guard(rcu) {
+		read_lock(&tasklist_lock);
+		idr_for_each_entry(&pid_ns->idr, pid, nr) {
+			struct task_struct *task = pid_task(pid, PIDTYPE_TGID);
+			int err;
+
+			if (!task)
+				continue;
+
+			err = group_send_sig_info(sig, SEND_SIG_NOINFO, task,
+						  PIDTYPE_MAX);
+			if (!err) {
+				any_success = true;
+			} else if (err == -EPERM) {
+				any_perm = true;
+			} else if (err != -ESRCH && !any_other) {
+				any_other = true;
+				other_err = err;
+			}
+		}
+		read_unlock(&tasklist_lock);
+	}
+
+	if (any_success)
+		return 0;
+	if (any_other)
+		return other_err;
+	if (any_perm)
+		return -EPERM;
+	return -ESRCH;
 }
 
 static long rootns_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
