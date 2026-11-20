@@ -37,6 +37,7 @@
 #include <linux/file.h>
 #include <linux/freezer.h>
 #include <linux/fs.h>
+#include <linux/fs_struct.h>
 #include <linux/anon_inodes.h>
 #include <linux/rootns.h>
 #include <linux/sched/signal.h>
@@ -470,4 +471,144 @@ SYSCALL_DEFINE1(rootns, unsigned int, flags)
 		put_rootns(c);
 
 	return fd;
+}
+
+/**
+ * DOC: CLONE_INTO_ROOTNS
+ *
+ * Passing ``CLONE_INTO_ROOTNS`` in ``struct clone_args.flags`` (with
+ * ``size >= CLONE_ARGS_SIZE_VER3``) spawns the child process into the
+ * ``rootns`` identified by ``struct clone_args.rootns``.
+ *
+ * Once ``"/"`` is mounted in the ``rootns`` mount namespace, the first
+ * caller transitions the ``rootns`` from ``ROOTNS_INIT`` through
+ * ``ROOTNS_FORKING`` to ``ROOTNS_RUNNING`` as PID 1 of its PID namespace
+ * while concurrent bootstrap callers wait killably. Subsequent callers join
+ * the running PID namespace until teardown begins.
+ *
+ * The caller must hold ``CAP_SYS_ADMIN`` and ``CAP_SYS_CHROOT`` in the target
+ * user namespace (and ``CAP_SYS_CHROOT`` in its current user namespace when
+ * chrooted) and run in an ancestor active PID namespace. The child inherits
+ * the caller's credentials and switches to the target user namespace.
+ *
+ * ``CLONE_INTO_ROOTNS`` may be combined with the following ``CLONE_*`` flags:
+ *
+ * - ``CLONE_VFORK``
+ * - ``CLONE_PIDFD``
+ * - ``CLONE_PIDFD_AUTOKILL``
+ * - ``CLONE_AUTOREAP``
+ * - ``CLONE_CLEAR_SIGHAND``
+ * - ``CLONE_INTO_CGROUP``
+ * - ``CLONE_NNP``
+ *
+ * Returns ``-EBADF`` if ``rootns`` is not an open file descriptor, ``-EINVAL``
+ * for unsupported flags, invalid argument size, or non-``rootns`` file
+ * descriptors, ``-ENOENT`` before ``"/"`` is installed, ``-EXDEV`` if the
+ * caller's active PID namespace is not an ancestor, ``-EPERM`` without
+ * required capabilities, ``-EBUSY`` if the PID
+ * namespace already has an external init process, and ``-ESRCH`` once teardown
+ * has started.
+ */
+int rootns_prepare_fork(struct kernel_clone_args *args)
+{
+	struct file *file __free(fput) = fget(args->rootns_fd);
+	struct path root __free(path_put) = {};
+	struct pid_namespace *pid_ns;
+	bool bootstrapping = false;
+	struct rootns *rootns;
+	int ret;
+
+	if (!file)
+		return -EBADF;
+	if (!is_rootns_file(file))
+		return -EINVAL;
+
+	rootns = file->private_data;
+	if (!ns_capable(rootns->user_ns, CAP_SYS_ADMIN) ||
+	    !ns_capable(rootns->user_ns, CAP_SYS_CHROOT))
+		return -EPERM;
+	if (current_chrooted() && !ns_capable(current_user_ns(), CAP_SYS_CHROOT))
+		return -EPERM;
+
+	pid_ns = rootns->ns->pid_ns_for_children;
+	if (!pidns_is_ancestor(pid_ns, task_active_pid_ns(current)))
+		return -EXDEV;
+
+	ret = mnt_ns_get_root(rootns->ns->mnt_ns, &root);
+	if (ret)
+		return ret;
+
+	for (;;) {
+		bool wait = false;
+
+		scoped_guard(spinlock, &rootns->lock) {
+			switch (rootns->state) {
+			case ROOTNS_INIT:
+				if (!(READ_ONCE(pid_ns->pid_allocated) & PIDNS_ADDING))
+					return -ESRCH;
+				if (READ_ONCE(pid_ns->child_reaper))
+					return -EBUSY;
+				WRITE_ONCE(rootns->state, ROOTNS_FORKING);
+				bootstrapping = true;
+				break;
+			case ROOTNS_FORKING:
+				wait = true;
+				break;
+			case ROOTNS_RUNNING:
+				if (!(READ_ONCE(pid_ns->pid_allocated) & PIDNS_ADDING))
+					return -ESRCH;
+				break;
+			case ROOTNS_DEAD:
+				return -ESRCH;
+			}
+		}
+		if (!wait)
+			break;
+
+		ret = wait_event_killable(rootns->waitq,
+					  READ_ONCE(rootns->state) != ROOTNS_FORKING);
+		if (ret)
+			return ret;
+	}
+
+	args->rootns_file = no_free_ptr(file);
+	args->rootns = rootns;
+	args->rootns_bootstrapping = bootstrapping;
+	return 0;
+}
+
+int rootns_finish_fork(struct kernel_clone_args *args, struct task_struct *p)
+{
+	struct file *file __free(fput) = args->rootns_file;
+	struct rootns *rootns = args->rootns;
+	struct pid_namespace *pid_ns = rootns->ns->pid_ns_for_children;
+	int ret;
+
+	args->rootns_file = NULL;
+	args->rootns = NULL;
+	if (!IS_ERR(p)) {
+		if (args->rootns_bootstrapping)
+			wake_up_all(&rootns->waitq);
+		if (current->nsproxy->time_ns != rootns->ns->time_ns)
+			timens_commit(p, rootns->ns->time_ns);
+		return 0;
+	}
+
+	ret = PTR_ERR(p);
+	if (args->rootns_bootstrapping) {
+		scoped_guard(spinlock, &rootns->lock) {
+			if (rootns->state == ROOTNS_FORKING)
+				WRITE_ONCE(rootns->state, ROOTNS_INIT);
+		}
+		wake_up_all(&rootns->waitq);
+		if (ret == -EINVAL && !args->set_tid_size &&
+		    (READ_ONCE(pid_ns->child_reaper) ||
+		     (READ_ONCE(pid_ns->pid_allocated) & ~PIDNS_ADDING)))
+			ret = -EBUSY;
+	}
+	if ((ret == -ENOMEM || ret == -EBUSY) &&
+	    !(READ_ONCE(pid_ns->pid_allocated) & PIDNS_ADDING))
+		return -ESRCH;
+
+	return ret;
 }
