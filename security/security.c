@@ -1185,15 +1185,16 @@ EXPORT_SYMBOL(security_sb_clone_mnt_opts);
  * security_move_mount() - Check permissions for moving a mount
  * @from_path: source mount point
  * @to_path: destination mount point
+ * @flags: MOVE_MOUNT_* flags
  *
- * Check permission before a mount is moved.
+ * Check permission before a mount is moved or cloned.
  *
  * Return: Returns 0 if permission is granted.
  */
 int security_move_mount(const struct path *from_path,
-			const struct path *to_path)
+			const struct path *to_path, unsigned int flags)
 {
-	return call_int_hook(move_mount, from_path, to_path);
+	return call_int_hook(move_mount, from_path, to_path, flags);
 }
 
 /**

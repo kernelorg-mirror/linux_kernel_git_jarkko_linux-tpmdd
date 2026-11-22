@@ -2833,7 +2833,7 @@ static int selinux_mount(const char *dev_name,
 }
 
 static int selinux_move_mount(const struct path *from_path,
-			      const struct path *to_path)
+			      const struct path *to_path, unsigned int flags)
 {
 	const struct cred *cred = current_cred();
 

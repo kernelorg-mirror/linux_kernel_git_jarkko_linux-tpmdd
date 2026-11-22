@@ -4782,12 +4782,13 @@ SYSCALL_DEFINE3(fsmount, int, fs_fd, unsigned int, flags,
 
 static inline int vfs_move_mount(const struct path *from_path,
 				 const struct path *to_path,
+				 unsigned int flags,
 				 enum mnt_tree_flags_t mflags,
 				 struct mnt_namespace *target_mnt_ns)
 {
 	int ret;
 
-	ret = security_move_mount(from_path, to_path);
+	ret = security_move_mount(from_path, to_path, flags);
 	if (ret)
 		return ret;
 
@@ -4909,8 +4910,8 @@ static int move_mount_mntns(int from_dfd, const char __user *from_pathname,
 	if (ret)
 		return ret;
 
-	return vfs_move_mount(&from_path, &to_path, mflags | MNT_TREE_MNTNS,
-			      target_mnt_ns);
+	return vfs_move_mount(&from_path, &to_path, flags,
+			      mflags | MNT_TREE_MNTNS, target_mnt_ns);
 }
 
 /*
@@ -4980,7 +4981,7 @@ SYSCALL_DEFINE5(move_mount,
 	if (ret)
 		return ret;
 
-	return vfs_move_mount(&from_path, &to_path, mflags, NULL);
+	return vfs_move_mount(&from_path, &to_path, flags, mflags, NULL);
 }
 
 /*

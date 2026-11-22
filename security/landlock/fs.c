@@ -1547,7 +1547,8 @@ static int hook_sb_mount(const char *const dev_name,
 }
 
 static int hook_move_mount(const struct path *const from_path,
-			   const struct path *const to_path)
+			   const struct path *const to_path,
+			   unsigned int flags)
 {
 	size_t handle_layer;
 	const struct landlock_cred_security *const subject =

@@ -742,7 +742,7 @@ static int apparmor_sb_mount(const char *dev_name, const struct path *path,
 }
 
 static int apparmor_move_mount(const struct path *from_path,
-			       const struct path *to_path)
+			       const struct path *to_path, unsigned int flags)
 {
 	struct aa_label *label;
 	int error = 0;

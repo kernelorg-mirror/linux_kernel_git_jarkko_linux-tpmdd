@@ -387,7 +387,8 @@ int security_sb_clone_mnt_opts(const struct super_block *oldsb,
 				struct super_block *newsb,
 				unsigned long kern_flags,
 				unsigned long *set_kern_flags);
-int security_move_mount(const struct path *from_path, const struct path *to_path);
+int security_move_mount(const struct path *from_path,
+			const struct path *to_path, unsigned int flags);
 int security_dentry_init_security(struct dentry *dentry, int mode,
 				  const struct qstr *name,
 				  const char **xattr_name,
@@ -858,7 +859,8 @@ static inline int security_sb_clone_mnt_opts(const struct super_block *oldsb,
 }
 
 static inline int security_move_mount(const struct path *from_path,
-				      const struct path *to_path)
+				      const struct path *to_path,
+				      unsigned int flags)
 {
 	return 0;
 }
