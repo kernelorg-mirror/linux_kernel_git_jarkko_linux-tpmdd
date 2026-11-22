@@ -423,13 +423,15 @@ int aa_mount_change_type(const struct cred *subj_cred,
 
 int aa_move_mount(const struct cred *subj_cred,
 		  struct aa_label *label, const struct path *from_path,
-		  const struct path *to_path)
+		  const struct path *to_path, unsigned int flags)
 {
 	struct aa_profile *profile;
 	char *to_buffer = NULL, *from_buffer = NULL;
+	unsigned long mnt_flags = (flags & MOVE_MOUNT_CLONE) ?
+				  (MS_BIND | MS_REC) : MS_MOVE;
 	int error;
 	DEFINE_AUDIT_MOUNT(ad, OP_MOUNT, subj_cred);
-	ad.mnt.flags = MS_MOVE;
+	ad.mnt.flags = mnt_flags;
 
 	AA_BUG(!label);
 	AA_BUG(!from_path);
@@ -441,12 +443,12 @@ int aa_move_mount(const struct cred *subj_cred,
 	if (!to_buffer || !from_buffer)
 		goto out;
 
-	if (!our_mnt(from_path->mnt))
+	if (!(flags & MOVE_MOUNT_CLONE) && !our_mnt(from_path->mnt))
 		/* moving a mount detached from the namespace */
 		from_path = NULL;
 	error = fn_for_each(label, profile,
 			match_mnt(profile, to_path, to_buffer, from_path,
-				  from_buffer, NULL, MS_MOVE, NULL, false,
+				  from_buffer, NULL, mnt_flags, NULL, false,
 				  &ad));
 out:
 	aa_put_buffer(to_buffer);
@@ -467,7 +469,7 @@ int aa_move_mount_old(const struct cred *subj_cred, struct aa_label *label,
 	if (error)
 		return error;
 
-	error = aa_move_mount(subj_cred, label, &old_path, path);
+	error = aa_move_mount(subj_cred, label, &old_path, path, 0);
 	path_put(&old_path);
 
 	return error;

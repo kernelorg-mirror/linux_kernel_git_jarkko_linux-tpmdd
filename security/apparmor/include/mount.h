@@ -43,7 +43,7 @@ int aa_move_mount_old(const struct cred *subj_cred,
 		      const char *old_name);
 int aa_move_mount(const struct cred *subj_cred,
 		  struct aa_label *label, const struct path *from_path,
-		  const struct path *to_path);
+		  const struct path *to_path, unsigned int flags);
 
 int aa_new_mount(const struct cred *subj_cred,
 		 struct aa_label *label, const char *dev_name,

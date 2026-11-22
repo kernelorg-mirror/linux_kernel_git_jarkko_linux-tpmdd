@@ -751,7 +751,7 @@ static int apparmor_move_mount(const struct path *from_path,
 	label = __begin_current_label_crit_section(&needput);
 	if (!unconfined(label))
 		error = aa_move_mount(current_cred(), label, from_path,
-				      to_path);
+				      to_path, flags);
 	__end_current_label_crit_section(label, needput);
 
 	return error;
