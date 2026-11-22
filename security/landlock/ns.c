@@ -13,6 +13,17 @@
 #include <linux/ns_common.h>
 #include <linux/nsproxy.h>
 #include <uapi/linux/landlock.h>
+#ifdef CONFIG_USERLAND
+#include <linux/cgroup_namespace.h>
+#include <linux/ipc_namespace.h>
+#include <linux/mnt_namespace.h>
+#include <linux/pid_namespace.h>
+#include <linux/time_namespace.h>
+#include <linux/user_namespace.h>
+#include <linux/userland.h>
+#include <linux/uts_namespace.h>
+#include <net/net_namespace.h>
+#endif
 
 #include "cred.h"
 #include "domain.h"
@@ -92,10 +103,10 @@ static const struct access_masks ns_permission = {
  * @ns: The namespace being allocated or installed.
  *
  * Shared check for namespace_init (creation via clone(2), unshare(2),
- * open_tree(2), or fsmount(2)) and namespace_install (use via setns(2)): denies
- * when the namespace type is not in the domain's allowed set.  At allocation
- * time @ns->ns_id is already set even though the namespace is not reachable
- * from user space yet.
+ * open_tree(2), fsmount(2), or userland_open(2)), namespace_install (use via
+ * setns(2)), and userland_share / userland_clone: denies when the namespace
+ * type is not in the domain's allowed set.  At allocation time @ns->ns_id is
+ * already set even though the namespace is not reachable from user space yet.
  *
  * Return: 0 if allowed, -EPERM if denied.
  */
@@ -139,9 +150,53 @@ static int hook_namespace_install(const struct nsset *const nsset,
 	return check_ns_type(ns);
 }
 
+#ifdef CONFIG_USERLAND
+static int check_userland_ns(struct ns_common *const ns)
+{
+	if (is_current_namespace(ns))
+		return 0;
+	return check_ns_type(ns);
+}
+
+static int hook_userland_share(struct userland *const userland,
+			       struct ns_common *const ns)
+{
+	return check_ns_type(ns);
+}
+
+static int hook_userland_clone(struct userland *const userland)
+{
+	struct ns_common *const namespaces[] = {
+		to_ns_common(userland->user_ns),
+		from_mnt_ns(userland->ns->mnt_ns),
+		to_ns_common(userland->ns->pid_ns_for_children),
+		to_ns_common(userland->ns->cgroup_ns),
+		to_ns_common(userland->ns->ipc_ns),
+		to_ns_common(userland->ns->uts_ns),
+		to_ns_common(userland->ns->net_ns),
+#ifdef CONFIG_TIME_NS
+		to_ns_common(userland->ns->time_ns),
+#endif
+	};
+	size_t i;
+
+	for (i = 0; i < ARRAY_SIZE(namespaces); i++) {
+		int err = check_userland_ns(namespaces[i]);
+
+		if (err)
+			return err;
+	}
+	return 0;
+}
+#endif /* CONFIG_USERLAND */
+
 static struct security_hook_list landlock_hooks[] __ro_after_init = {
 	LSM_HOOK_INIT(namespace_init, hook_namespace_init),
 	LSM_HOOK_INIT(namespace_install, hook_namespace_install),
+#ifdef CONFIG_USERLAND
+	LSM_HOOK_INIT(userland_share, hook_userland_share),
+	LSM_HOOK_INIT(userland_clone, hook_userland_clone),
+#endif
 };
 
 __init void landlock_add_ns_hooks(void)
