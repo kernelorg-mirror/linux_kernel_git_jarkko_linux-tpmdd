@@ -1123,10 +1123,11 @@ int tpm2_sessions_init(struct tpm_chip *chip)
 	return rc;
 }
 #endif /* CONFIG_TCG_TPM2_HMAC */
+
 /*
- * A mask containing the object attributes for the kernel held null primary key
- * used in HMAC encryption. For more information on specific attributes look up
- * to "8.3 TPMA_OBJECT (Object Attributes)".
+ * A mask containing the object attributes for the TCG mandated H-2 ECC P-256
+ * primary storage key template. For more information on specific attributes
+ * look up "8.3 TPMA_OBJECT (Object Attributes)".
  */
 #define TPM2_OA_NULL_KEY ( \
 	TPM2_OA_NO_DA | \
@@ -1156,21 +1157,23 @@ static int tpm2_parse_create_primary(struct tpm_chip *chip, struct tpm_buf *buf,
 {
 	struct tpm_header *head = (struct tpm_header *)buf->data;
 	off_t offset_r = TPM_HEADER_SIZE, offset_t;
-	u16 len = TPM_HEADER_SIZE;
+	u8 resp_name[TPM2_NULL_NAME_SIZE];
 	u32 total_len = be32_to_cpu(head->length);
 	u32 val32, param_len, keyhandle;
-	u16 val;
+#ifdef CONFIG_TCG_TPM2_HMAC
+	const u8 *ec_x, *ec_y;
+#endif
+	int rc = -EIO;
+	u16 val, len;
 
 	if (!tpm_buf_read_u32(buf, &offset_r, &keyhandle))
 		return -EIO;
 
-	if (handle)
-		*handle = keyhandle;
-	else
-		tpm2_flush_context(chip, keyhandle);
-
 	if (!tpm_buf_read_u32(buf, &offset_r, &param_len))
-		return -EIO;
+		goto err;
+	if (total_len < TPM_HEADER_SIZE + 8 ||
+	    param_len > total_len - TPM_HEADER_SIZE - 8)
+		goto err_inval;
 
 	/*
 	 * param_len doesn't include the header, but all the other
@@ -1179,183 +1182,185 @@ static int tpm2_parse_create_primary(struct tpm_chip *chip, struct tpm_buf *buf,
 	 */
 	param_len += TPM_HEADER_SIZE;
 
-	if (param_len + 8 > total_len)
-		return -EINVAL;
-
 	if (!tpm_buf_read_u16(buf, &offset_r, &len))
-		return -EIO;
-
+		goto err;
 	offset_t = offset_r;
-	if (name) {
-		/*
-		 * now we have the public area, compute the name of
-		 * the object
-		 */
-		put_unaligned_be16(TPM_ALG_SHA256, name);
-		sha256(&buf->data[offset_r], len, name + 2);
-	}
+	offset_r += len;
+	if (offset_r > param_len || offset_r > tpm_buf_length(buf))
+		goto err_inval;
+
+	/*
+	 * Now we have the public area, compute the name of the object.
+	 */
+	put_unaligned_be16(TPM_ALG_SHA256, resp_name);
+	sha256(&buf->data[offset_t], len, resp_name + 2);
 
 	/* validate the public key */
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
+		goto err;
 
 	/* key type (must be what we asked for) */
 	if (val != TPM_ALG_ECC)
-		return -EINVAL;
+		goto err_inval;
 
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
+		goto err;
 
 	/* name algorithm */
 	if (val != TPM_ALG_SHA256)
-		return -EINVAL;
+		goto err_inval;
 
 	if (!tpm_buf_read_u32(buf, &offset_t, &val32))
-		return -EIO;
+		goto err;
 
 	/* object properties */
 	if (val32 != TPM2_OA_NULL_KEY)
-		return -EINVAL;
+		goto err_inval;
 
 	/* auth policy (empty) */
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
-
+		goto err;
 	if (val != 0)
-		return -EINVAL;
+		goto err_inval;
 
 	/* symmetric key parameters */
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
-
+		goto err;
 	if (val != TPM_ALG_AES)
-		return -EINVAL;
+		goto err_inval;
 
 	/* symmetric key length */
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
-
+		goto err;
 	if (val != AES_KEY_BITS)
-		return -EINVAL;
+		goto err_inval;
 
 	/* symmetric encryption scheme */
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
-
+		goto err;
 	if (val != TPM_ALG_CFB)
-		return -EINVAL;
+		goto err_inval;
 
 	/* signing scheme */
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
-
+		goto err;
 	if (val != TPM_ALG_NULL)
-		return -EINVAL;
+		goto err_inval;
 
 	/* ECC Curve */
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
-
+		goto err;
 	if (val != TPM2_ECC_NIST_P256)
-		return -EINVAL;
+		goto err_inval;
 
 	/* KDF Scheme */
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
-
+		goto err;
 	if (val != TPM_ALG_NULL)
-		return -EINVAL;
+		goto err_inval;
 
 	/* extract public key (x and y points) */
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
-
-	if (val != EC_PT_SZ)
-		return -EINVAL;
+		goto err;
+	if (val != EC_PT_SZ || offset_t + val > offset_r)
+		goto err_inval;
 #ifdef CONFIG_TCG_TPM2_HMAC
-	memcpy(chip->null_ec_key_x, &buf->data[offset_t], val);
+	ec_x = &buf->data[offset_t];
 #endif
 	offset_t += val;
 
 	if (!tpm_buf_read_u16(buf, &offset_t, &val))
-		return -EIO;
-
-	if (val != EC_PT_SZ)
-		return -EINVAL;
+		goto err;
+	if (val != EC_PT_SZ || offset_t + val > offset_r)
+		goto err_inval;
 #ifdef CONFIG_TCG_TPM2_HMAC
-	memcpy(chip->null_ec_key_y, &buf->data[offset_t], val);
+	ec_y = &buf->data[offset_t];
 #endif
 	offset_t += val;
 
-	/* original length of the whole TPM2B */
-	offset_r += len;
-
 	/* should have exactly consumed the TPM2B public structure */
 	if (offset_t != offset_r)
-		return -EINVAL;
-	if (offset_r > param_len)
-		return -EINVAL;
+		goto err_inval;
 
 	/* creation data (skip) */
 	if (!tpm_buf_read_u16(buf, &offset_r, &len))
-		return -EIO;
-
+		goto err;
 	offset_r += len;
 	if (offset_r > param_len)
-		return -EINVAL;
+		goto err_inval;
 
 	/* creation digest (must be sha256) */
 	if (!tpm_buf_read_u16(buf, &offset_r, &len))
-		return -EIO;
-
+		goto err;
 	offset_r += len;
 	if (len != SHA256_DIGEST_SIZE || offset_r > param_len)
-		return -EINVAL;
+		goto err_inval;
 
 	/* TPMT_TK_CREATION follows */
 	/* tag, must be TPM_ST_CREATION (0x8021) */
 	if (!tpm_buf_read_u16(buf, &offset_r, &val))
-		return -EIO;
-
+		goto err;
 	if (val != TPM2_ST_CREATION || offset_r > param_len)
-		return -EINVAL;
+		goto err_inval;
 
 	/* hierarchy */
 	if (!tpm_buf_read_u32(buf, &offset_r, &val32))
-		return -EIO;
-
+		goto err;
 	if (val32 != hierarchy || offset_r > param_len)
-		return -EINVAL;
+		goto err_inval;
 
 	/* the ticket digest HMAC (might not be sha256) */
 	if (!tpm_buf_read_u16(buf, &offset_r, &len))
-		return -EIO;
-
+		goto err;
 	offset_r += len;
 	if (offset_r > param_len)
-		return -EINVAL;
+		goto err_inval;
 
 	/*
 	 * finally we have the name, which is a sha256 digest plus a 2
 	 * byte algorithm type
 	 */
 	if (!tpm_buf_read_u16(buf, &offset_r, &len))
-		return -EIO;
+		goto err;
+	if (offset_r + len != param_len + 8 || len != sizeof(resp_name))
+		goto err_inval;
+	if (offset_r + len > tpm_buf_length(buf))
+		goto err;
 
-	if (offset_r + len != param_len + 8)
-		return -EINVAL;
-	if (len != SHA256_DIGEST_SIZE + 2)
-		return -EINVAL;
+	if (memcmp(resp_name, &buf->data[offset_r], sizeof(resp_name)) != 0) {
+		dev_err(&chip->dev, "primary key name comparison failed\n");
+		goto err_inval;
+	}
 
 #ifdef CONFIG_TCG_TPM2_HMAC
-	if (memcmp(chip->null_key_name, &buf->data[offset_r],
-		   SHA256_DIGEST_SIZE + 2) != 0) {
-		dev_err(&chip->dev, "NULL Seed name comparison failed\n");
-		return -EINVAL;
+	if (hierarchy == TPM2_RH_NULL) {
+		if (name == chip->null_key_name) {
+			memcpy(chip->null_ec_key_x, ec_x, EC_PT_SZ);
+			memcpy(chip->null_ec_key_y, ec_y, EC_PT_SZ);
+		} else if (memcmp(chip->null_key_name, resp_name,
+				  sizeof(resp_name)) != 0) {
+			dev_err(&chip->dev,
+				"NULL Seed name comparison failed\n");
+			goto err_inval;
+		}
 	}
 #endif
 
+	if (name)
+		memcpy(name, resp_name, sizeof(resp_name));
+
+	if (handle)
+		*handle = keyhandle;
+	else
+		tpm2_flush_context(chip, keyhandle);
+
 	return 0;
+
+err_inval:
+	rc = -EINVAL;
+err:
+	tpm2_flush_context(chip, keyhandle);
+	return rc;
 }
 
 /**
@@ -1467,7 +1472,7 @@ int tpm2_create_primary(struct tpm_chip *chip, u32 hierarchy, u32 *handle,
 	tpm_buf_append_u32(buf, 0);
 
 	rc = tpm_transmit_cmd(chip, buf, 0,
-			      "attempting to create NULL primary");
+			      "attempting to create primary key");
 
 	if (rc == TPM2_RC_SUCCESS)
 		rc = tpm2_parse_create_primary(chip, buf, handle, hierarchy,
