@@ -101,6 +101,7 @@ struct tpm2_key_context {
 	u32 pub_len;
 	const u8 *priv;
 	u32 priv_len;
+	bool has_policy;
 };
 
 static int tpm2_key_decode(struct trusted_key_payload *payload,
@@ -119,6 +120,9 @@ static int tpm2_key_decode(struct trusted_key_payload *payload,
 	if (ret < 0)
 		return ret;
 
+	if (ctx.has_policy && !private->policyhandle)
+		return -EOPNOTSUPP;
+
 	if (ctx.priv_len + ctx.pub_len > MAX_BLOB_SIZE)
 		return -EINVAL;
 
@@ -128,12 +132,51 @@ static int tpm2_key_decode(struct trusted_key_payload *payload,
 
 	*buf = blob;
 	*blob_len = ctx.priv_len + ctx.pub_len;
-	private->keyhandle = ctx.parent;
+	if (!private->keyhandle)
+		private->keyhandle = ctx.parent;
 
 	memcpy(blob, ctx.priv, ctx.priv_len);
 	blob += ctx.priv_len;
 
 	memcpy(blob, ctx.pub, ctx.pub_len);
+
+	return 0;
+}
+
+int tpm2_key_policy(void *context, size_t hdrlen,
+		    unsigned char tag,
+		    const void *value, size_t vlen)
+{
+	struct tpm2_key_context *ctx = context;
+
+	ctx->has_policy = true;
+	return 0;
+}
+
+int tpm2_key_secret(void *context, size_t hdrlen,
+		    unsigned char tag,
+		    const void *value, size_t vlen)
+{
+	return -EOPNOTSUPP;
+}
+
+int tpm2_key_auth_policy(void *context, size_t hdrlen,
+			 unsigned char tag,
+			 const void *value, size_t vlen)
+{
+	return -EOPNOTSUPP;
+}
+
+int tpm2_key_rsa_parent(void *context, size_t hdrlen,
+			unsigned char tag,
+			const void *value, size_t vlen)
+{
+	const u8 *v = value;
+
+	if (vlen != 1)
+		return -EBADMSG;
+	if (*v)
+		return -EOPNOTSUPP;
 
 	return 0;
 }
@@ -144,7 +187,14 @@ int tpm2_key_parent(void *context, size_t hdrlen,
 {
 	struct tpm2_key_context *ctx = context;
 	const u8 *v = value;
-	int i;
+	size_t i;
+
+	if (vlen > 1 && v[0] == 0) {
+		v++;
+		vlen--;
+	}
+	if (!vlen || vlen > sizeof(u32))
+		return -EBADMSG;
 
 	ctx->parent = 0;
 	for (i = 0; i < vlen; i++) {
@@ -172,7 +222,6 @@ int tpm2_key_type(void *context, size_t hdrlen,
 
 	return 0;
 }
-
 int tpm2_key_pub(void *context, size_t hdrlen,
 	       unsigned char tag,
 	       const void *value, size_t vlen)
@@ -198,6 +247,48 @@ int tpm2_key_priv(void *context, size_t hdrlen,
 }
 
 /**
+ * tpm2_load_parent() - resolve a parent handle for TPM 2.0 child operations
+ *
+ * @chip: TPM chip to use
+ * @parent: persistent/volatile object handle or hierarchy handle
+ * @handle: returned usable parent handle
+ * @name: buffer populated with the parent handle name
+ * @name_size: returned byte length of @name
+ * @created: set to true if a temporary primary key was created and must be flushed
+ *
+ * Return: 0 on success, negative errno on failure.
+ */
+static int tpm2_load_parent(struct tpm_chip *chip, u32 parent, u32 *handle,
+			    u8 name[TPM2_MAX_NAME_SIZE], u16 *name_size,
+			    bool *created)
+{
+	int rc;
+
+	*created = false;
+	if (tpm2_handle_mso(parent) != TPM2_MSO_PERMANENT) {
+		*handle = parent;
+		rc = tpm2_read_public(chip, parent, name);
+		if (rc < 0)
+			return rc;
+		*name_size = rc;
+		return 0;
+	}
+
+	if (parent != TPM2_RH_OWNER &&
+	    parent != TPM2_RH_NULL &&
+	    parent != TPM2_RH_PLATFORM)
+		return -EINVAL;
+
+	rc = tpm2_create_primary(chip, parent, handle, name);
+	if (rc)
+		return tpm_ret_to_err(rc);
+
+	*name_size = TPM2_NULL_NAME_SIZE;
+	*created = true;
+	return 0;
+}
+
+/**
  * tpm2_seal_trusted() - seal the payload of a trusted key
  *
  * @chip: TPM chip to use
@@ -215,7 +306,9 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 	off_t offset = TPM_HEADER_SIZE;
 	struct tpm_buf *buf __free(kfree) = NULL;
 	struct tpm_buf *sized __free(kfree) = NULL;
+	bool created_parent = false;
 	u16 parent_name_size;
+	u32 parent_handle;
 	int blob_len = 0;
 	u32 size;
 	int hash;
@@ -233,21 +326,20 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 	if (rc)
 		return rc;
 
-	rc = tpm2_read_public(chip, private->keyhandle, parent_name);
-	if (rc < 0)
+	rc = tpm2_load_parent(chip, private->keyhandle, &parent_handle,
+			      parent_name, &parent_name_size, &created_parent);
+	if (rc)
 		goto out_put;
-
-	parent_name_size = rc;
 
 	rc = tpm2_start_auth_session(chip);
 	if (rc)
-		goto out_put;
+		goto out_parent;
 
 	buf = kzalloc(TPM_BUFSIZE, GFP_KERNEL);
 	if (!buf) {
 		rc = -ENOMEM;
 		tpm2_end_auth_session(chip);
-		goto out_put;
+		goto out_parent;
 	}
 
 	tpm_buf_init(buf, TPM_BUFSIZE);
@@ -257,19 +349,18 @@ int tpm2_seal_trusted(struct tpm_chip *chip,
 	if (!sized) {
 		rc = -ENOMEM;
 		tpm2_end_auth_session(chip);
-		goto out_put;
+		goto out_parent;
 	}
 
 	tpm_buf_init_sized(sized, TPM_BUFSIZE);
 
-	rc = tpm_buf_append_name(chip, buf, private->keyhandle, parent_name,
+	rc = tpm_buf_append_name(chip, buf, parent_handle, parent_name,
 				 parent_name_size);
 	if (rc)
 		goto out;
 
 	tpm_buf_append_hmac_session(chip, buf, TPM2_SA_DECRYPT,
 				    private->keyauth, TPM_DIGEST_SIZE);
-
 	/* sensitive */
 	tpm_buf_append_u16(sized, private->blobauth_len);
 
@@ -342,6 +433,9 @@ out:
 	if (!rc)
 		payload->blob_len = blob_len;
 
+out_parent:
+	if (created_parent)
+		tpm2_flush_context(chip, parent_handle);
 out_put:
 	tpm_put_ops(chip);
 	return tpm_ret_to_err(rc);
@@ -369,16 +463,23 @@ static int tpm2_load_cmd(struct tpm_chip *chip,
 	struct trusted_key_tpm *private = options->private;
 	u8 parent_name[TPM2_MAX_NAME_SIZE];
 	struct tpm_buf *buf __free(kfree) = NULL;
+	bool created_parent = false;
 	u16 parent_name_size;
 	unsigned int private_len;
 	unsigned int public_len;
 	unsigned int blob_len;
+	u32 parent_handle;
 	u8 *blob, *pub;
 	int rc;
 	u32 attrs;
 
 	rc = tpm2_key_decode(payload, options, &blob, &blob_len);
 	if (rc) {
+		if (rc != -EBADMSG ||
+		    (payload->blob_len &&
+		     payload->blob[0] == (ASN1_CONS_BIT | ASN1_SEQ)))
+			return rc;
+
 		/* old form */
 		blob = payload->blob;
 		blob_len = payload->blob_len;
@@ -423,29 +524,29 @@ static int tpm2_load_cmd(struct tpm_chip *chip,
 	if (blob_len > payload->blob_len)
 		return -E2BIG;
 
-	rc = tpm2_read_public(chip, private->keyhandle, parent_name);
-	if (rc < 0)
+	rc = tpm2_load_parent(chip, private->keyhandle, &parent_handle,
+			      parent_name, &parent_name_size, &created_parent);
+	if (rc)
 		return rc;
-
-	parent_name_size = rc;
 
 	rc = tpm2_start_auth_session(chip);
 	if (rc)
-		return rc;
+		goto out;
 
 	buf = kzalloc(TPM_BUFSIZE, GFP_KERNEL);
 	if (!buf) {
 		tpm2_end_auth_session(chip);
-		return -ENOMEM;
+		rc = -ENOMEM;
+		goto out;
 	}
 
 	tpm_buf_init(buf, TPM_BUFSIZE);
 	tpm_buf_reset(buf, TPM2_ST_SESSIONS, TPM2_CC_LOAD);
 
-	rc = tpm_buf_append_name(chip, buf, private->keyhandle, parent_name,
+	rc = tpm_buf_append_name(chip, buf, parent_handle, parent_name,
 				 parent_name_size);
 	if (rc)
-		return rc;
+		goto out;
 
 	tpm_buf_append_hmac_session(chip, buf, 0, private->keyauth,
 				    TPM_DIGEST_SIZE);
@@ -454,18 +555,23 @@ static int tpm2_load_cmd(struct tpm_chip *chip,
 
 	if (buf->flags & TPM_BUF_INVALID) {
 		tpm2_end_auth_session(chip);
-		return -E2BIG;
+		rc = -E2BIG;
+		goto out;
 	}
 
 	rc = tpm_buf_fill_hmac_session(chip, buf);
 	if (rc)
-		return rc;
+		goto out;
 
 	rc = tpm_transmit_cmd(chip, buf, 4, "loading blob");
 	rc = tpm_buf_check_hmac_response(chip, buf, rc);
 	if (!rc)
 		*blob_handle = be32_to_cpup(
 			(__be32 *)&buf->data[TPM_HEADER_SIZE]);
+
+out:
+	if (created_parent)
+		tpm2_flush_context(chip, parent_handle);
 
 	return tpm_ret_to_err(rc);
 }

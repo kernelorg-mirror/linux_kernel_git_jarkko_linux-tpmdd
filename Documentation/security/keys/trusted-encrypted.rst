@@ -561,6 +561,11 @@ policy::
     TPMKey ::= SEQUENCE {
         type		OBJECT IDENTIFIER
         emptyAuth	[0] EXPLICIT BOOLEAN OPTIONAL
+        policy		[1] EXPLICIT SEQUENCE OF TPMPolicy OPTIONAL
+        secret		[2] EXPLICIT OCTET STRING OPTIONAL
+        authPolicy	[3] EXPLICIT SEQUENCE OF TPMAuthPolicy OPTIONAL
+        description	[4] EXPLICIT UTF8String OPTIONAL
+        rsaParent	[5] EXPLICIT BOOLEAN OPTIONAL
         parent		INTEGER
         pubkey		OCTET STRING
         privkey		OCTET STRING
@@ -592,12 +597,13 @@ phrase.  This is used by most user space consumers to decide whether
 to prompt for a password.
 
 parent represents the parent key handle, either in the 0x81 MSO space,
-like 0x81000001 for the RSA primary storage key.  Userspace programmes
-also support specifying the primary handle in the 0x40 MSO space.  If
-this happens the Elliptic Curve variant of the primary key using the
-TCG defined template will be generated on the fly into a volatile
-object and used as the parent.  The current kernel code only supports
-the 0x81 MSO form.
+like 0x81000001 for a persistent primary storage key, or a hierarchy
+handle in the 0x40 MSO permanent handle space (TPM_RH_OWNER 0x40000001,
+TPM_RH_NULL 0x40000007, or TPM_RH_PLATFORM 0x4000000c).  When a 0x40
+MSO hierarchy handle is used without rsaParent, the Elliptic Curve
+variant of the primary key using the TCG defined H-2 NIST P-256 template
+is generated on the fly into a volatile object, used as the parent, and
+flushed afterwards.
 
 pubkey is the binary representation of TPM2B_PRIVATE excluding the
 initial TPM2B header, which can be reconstructed from the ASN.1 octet

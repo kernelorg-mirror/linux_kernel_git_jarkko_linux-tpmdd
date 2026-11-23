@@ -265,8 +265,10 @@ enum tpm2_cc_attrs {
 };
 
 enum tpm2_permanent_handles {
+	TPM2_RH_OWNER		= 0x40000001,
 	TPM2_RH_NULL		= 0x40000007,
 	TPM2_RS_PW		= 0x40000009,
+	TPM2_RH_PLATFORM	= 0x4000000C,
 };
 
 /* Most Significant Octet for key types  */
