@@ -23,6 +23,9 @@ menuconfig KEYS
 
 if KEYS
 
+config KEYCTL_PKEY
+	bool
+
 config KEYS_REQUEST_CACHE
 	bool "Enable temporary caching of the last request_key() result"
 	help

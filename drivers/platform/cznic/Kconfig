@@ -80,7 +80,6 @@ config TURRIS_OMNIA_MCU_KEYCTL
 	bool "Turris Omnia MCU ECDSA message signing"
 	default y
 	depends on KEYS
-	depends on ASYMMETRIC_KEY_TYPE
 	depends on TURRIS_OMNIA_MCU_GPIO
 	select TURRIS_SIGNING_KEY
 	help
@@ -93,6 +92,6 @@ endif # TURRIS_OMNIA_MCU
 config TURRIS_SIGNING_KEY
 	tristate
 	depends on KEYS
-	depends on ASYMMETRIC_KEY_TYPE
+	select KEYCTL_PKEY
 
 endif # CZNIC_PLATFORMS

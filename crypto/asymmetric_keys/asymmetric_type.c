@@ -565,6 +565,7 @@ out:
 	return ret;
 }
 
+#ifdef CONFIG_ASYMMETRIC_KEY_PKEY
 int asymmetric_key_eds_op(struct kernel_pkey_params *params,
 			  const void *in, void *out)
 {
@@ -603,6 +604,7 @@ static int asymmetric_key_verify_signature(struct kernel_pkey_params *params,
 
 	return verify_signature(params->key, &sig);
 }
+#endif
 
 struct key_type key_type_asymmetric = {
 	.name			= "asymmetric",
@@ -614,9 +616,11 @@ struct key_type key_type_asymmetric = {
 	.destroy		= asymmetric_key_destroy,
 	.describe		= asymmetric_key_describe,
 	.lookup_restriction	= asymmetric_lookup_restriction,
+#ifdef CONFIG_ASYMMETRIC_KEY_PKEY
 	.asym_query		= query_asymmetric_key,
 	.asym_eds_op		= asymmetric_key_eds_op,
 	.asym_verify_signature	= asymmetric_key_verify_signature,
+#endif
 };
 EXPORT_SYMBOL_GPL(key_type_asymmetric);
 

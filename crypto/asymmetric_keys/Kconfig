@@ -10,6 +10,17 @@ menuconfig ASYMMETRIC_KEY_TYPE
 
 if ASYMMETRIC_KEY_TYPE
 
+config ASYMMETRIC_KEY_PKEY
+	bool "Asymmetric key keyctl public-key operations"
+	select KEYCTL_PKEY
+	help
+	  This option exposes keyctl public-key operations (query, encrypt,
+	  decrypt, sign, and verify) on asymmetric keys to userspace.
+	  In-kernel signature verification (such as module and kexec
+	  verification) does not require this option.
+
+	  If you are unsure as to whether this is required, answer N.
+
 config ASYMMETRIC_PUBLIC_KEY_SUBTYPE
 	tristate "Asymmetric public-key crypto algorithm subtype"
 	select MPILIB

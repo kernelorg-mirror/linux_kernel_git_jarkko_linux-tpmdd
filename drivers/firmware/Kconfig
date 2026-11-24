@@ -288,7 +288,6 @@ config TURRIS_MOX_RWTM_KEYCTL
 	bool "Turris Mox rWTM ECDSA message signing"
 	default y
 	depends on KEYS
-	depends on ASYMMETRIC_KEY_TYPE
 	select CZNIC_PLATFORMS
 	select TURRIS_SIGNING_KEY
 	help

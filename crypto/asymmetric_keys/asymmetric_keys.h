@@ -13,5 +13,7 @@ extern int __asymmetric_key_hex_to_key_id(const char *id,
 					  struct asymmetric_key_id *match_id,
 					  size_t hexlen);
 
+#ifdef CONFIG_ASYMMETRIC_KEY_PKEY
 extern int asymmetric_key_eds_op(struct kernel_pkey_params *params,
 				 const void *in, void *out);
+#endif
