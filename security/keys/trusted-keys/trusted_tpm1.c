@@ -943,6 +943,9 @@ static int trusted_tpm_unseal(struct trusted_key_payload *p, char *datablob)
 		}
 	}
 
+	if (!p->key_len)
+		p->private = no_free_ptr(private);
+
 	return ret;
 }
 
@@ -950,6 +953,22 @@ static int trusted_tpm_get_random(unsigned char *key, size_t key_len)
 {
 	return tpm_get_random(chip, key, key_len);
 }
+
+#ifdef CONFIG_TRUSTED_KEYS_ASYMMETRIC
+static int trusted_tpm_asym_eds_op(const struct trusted_key_payload *p,
+				   struct kernel_pkey_params *params,
+				   const void *in, void *out)
+{
+	return tpm2_asym_eds_op(chip, p, params, in, out);
+}
+
+static int trusted_tpm_asym_verify_signature(const struct trusted_key_payload *p,
+					     struct kernel_pkey_params *params,
+					     const void *in, const void *in2)
+{
+	return tpm2_asym_verify_signature(chip, p, params, in, in2);
+}
+#endif
 
 static int __init init_digests(void)
 {
@@ -1002,5 +1021,10 @@ struct trusted_key_ops trusted_key_tpm_ops = {
 	.seal = trusted_tpm_seal,
 	.unseal = trusted_tpm_unseal,
 	.get_random = trusted_tpm_get_random,
+#ifdef CONFIG_TRUSTED_KEYS_ASYMMETRIC
+	.asym_query = tpm2_asym_query,
+	.asym_eds_op = trusted_tpm_asym_eds_op,
+	.asym_verify_signature = trusted_tpm_asym_verify_signature,
+#endif
 	.exit = trusted_tpm_exit,
 };

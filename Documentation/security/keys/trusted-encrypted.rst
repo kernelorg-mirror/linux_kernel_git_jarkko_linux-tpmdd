@@ -589,7 +589,12 @@ available are::
                     represents a symmetric key and must be unsealed before
                     use.
 
-The trusted key code only uses the TPM Sealed Data OID.
+The trusted key code uses TPM Sealed Data for symmetric keys.
+
+When ``CONFIG_TRUSTED_KEYS_ASYMMETRIC`` is enabled, TPM 2.0 backend accepts TPM
+Loadable keys through the ``trusted`` key type. Use the keyctl pkey-operations
+for these keys. For RSA OAEP encryption and decryption, specify ``enc=oaep`` and
+a ``hash=`` matching the key's scheme, if fixed.
 
 emptyAuth is true if the key has well known authorization "".  If it
 is false or not present, the key requires an explicit authorization
