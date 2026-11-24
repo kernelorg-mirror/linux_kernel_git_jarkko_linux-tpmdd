@@ -97,6 +97,7 @@ static int tpm2_key_encode(struct trusted_key_payload *payload,
 
 struct tpm2_key_context {
 	u32 parent;
+	enum OID oid;
 	const u8 *pub;
 	u32 pub_len;
 	const u8 *priv;
@@ -104,11 +105,11 @@ struct tpm2_key_context {
 	bool has_policy;
 };
 
-static int tpm2_key_decode(struct trusted_key_payload *payload,
-			   struct trusted_key_options *options,
-			   u8 **buf, unsigned int *blob_len)
+static int tpm2_key_decode(const struct trusted_key_payload *payload,
+			   const struct trusted_key_tpm *private,
+			   u32 *parent, u8 **buf, unsigned int *blob_len,
+			   enum OID *oid)
 {
-	struct trusted_key_tpm *private = options->private;
 	int ret;
 	struct tpm2_key_context ctx;
 	u8 *blob;
@@ -132,8 +133,10 @@ static int tpm2_key_decode(struct trusted_key_payload *payload,
 
 	*buf = blob;
 	*blob_len = ctx.priv_len + ctx.pub_len;
-	if (!private->keyhandle)
-		private->keyhandle = ctx.parent;
+	if (oid)
+		*oid = ctx.oid;
+	if (parent)
+		*parent = ctx.parent;
 
 	memcpy(blob, ctx.priv, ctx.priv_len);
 	blob += ctx.priv_len;
@@ -209,18 +212,22 @@ int tpm2_key_type(void *context, size_t hdrlen,
 		unsigned char tag,
 		const void *value, size_t vlen)
 {
+	struct tpm2_key_context *ctx = context;
 	enum OID oid = look_up_OID(value, vlen);
 
-	if (oid != OID_TPMSealedData) {
+	if (oid == OID_TPMSealedData) {
+		ctx->oid = oid;
+		return 0;
+	}
+
+	if (IS_ENABLED(CONFIG_DEBUG_KERNEL)) {
 		char buffer[50];
 
 		sprint_oid(value, vlen, buffer, sizeof(buffer));
-		pr_debug("OID is \"%s\" which is not TPMSealedData\n",
-			 buffer);
-		return -EINVAL;
+		pr_debug("OID \"%s\" is not supported\n", buffer);
 	}
 
-	return 0;
+	return -EINVAL;
 }
 int tpm2_key_pub(void *context, size_t hdrlen,
 	       unsigned char tag,
@@ -441,88 +448,17 @@ out_put:
 	return tpm_ret_to_err(rc);
 }
 
-/**
- * tpm2_load_cmd() - execute a TPM2_Load command
- *
- * @chip: TPM chip to use
- * @payload: the key data in clear and encrypted form
- * @options: authentication values and other options
- * @blob_handle: returned blob handle
- *
- * Return: 0 on success.
- *        -E2BIG on wrong payload size.
- *        -EPERM on tpm error status.
- *        < 0 error from tpm_send.
- */
-static int tpm2_load_cmd(struct tpm_chip *chip,
-			 struct trusted_key_payload *payload,
-			 struct trusted_key_options *options,
-			 u32 *blob_handle)
+static int tpm2_load_blob(struct tpm_chip *chip,
+			  struct trusted_key_tpm *private,
+			  const u8 *blob, unsigned int blob_len,
+			  u32 *blob_handle)
 {
-	u8 *blob_ref __free(kfree) = NULL;
-	struct trusted_key_tpm *private = options->private;
 	u8 parent_name[TPM2_MAX_NAME_SIZE];
 	struct tpm_buf *buf __free(kfree) = NULL;
 	bool created_parent = false;
 	u16 parent_name_size;
-	unsigned int private_len;
-	unsigned int public_len;
-	unsigned int blob_len;
 	u32 parent_handle;
-	u8 *blob, *pub;
 	int rc;
-	u32 attrs;
-
-	rc = tpm2_key_decode(payload, options, &blob, &blob_len);
-	if (rc) {
-		if (rc != -EBADMSG ||
-		    (payload->blob_len &&
-		     payload->blob[0] == (ASN1_CONS_BIT | ASN1_SEQ)))
-			return rc;
-
-		/* old form */
-		blob = payload->blob;
-		blob_len = payload->blob_len;
-		payload->old_format = 1;
-	} else {
-		/* Bind for cleanup: */
-		blob_ref = blob;
-	}
-
-	/* new format carries keyhandle but old format doesn't */
-	if (!private->keyhandle)
-		return -EINVAL;
-
-	/* must be big enough for at least the two be16 size counts */
-	if (blob_len < 4)
-		return -EINVAL;
-
-	private_len = get_unaligned_be16(blob);
-
-	/* must be big enough for following public_len */
-	if (private_len + 2 + 2 > blob_len)
-		return -E2BIG;
-
-	public_len = get_unaligned_be16(blob + 2 + private_len);
-	if (private_len + 2 + public_len + 2 > blob_len)
-		return -E2BIG;
-
-	if (public_len < 8)
-		return -EINVAL;
-
-	pub = blob + 2 + private_len + 2;
-	/* key attributes are always at offset 4 */
-	attrs = get_unaligned_be32(pub + 4);
-
-	if ((attrs & (TPM2_OA_FIXED_TPM | TPM2_OA_FIXED_PARENT)) ==
-	    (TPM2_OA_FIXED_TPM | TPM2_OA_FIXED_PARENT))
-		payload->migratable = 0;
-	else
-		payload->migratable = 1;
-
-	blob_len = private_len + public_len + 4;
-	if (blob_len > payload->blob_len)
-		return -E2BIG;
 
 	rc = tpm2_load_parent(chip, private->keyhandle, &parent_handle,
 			      parent_name, &parent_name_size, &created_parent);
@@ -566,14 +502,126 @@ static int tpm2_load_cmd(struct tpm_chip *chip,
 	rc = tpm_transmit_cmd(chip, buf, 4, "loading blob");
 	rc = tpm_buf_check_hmac_response(chip, buf, rc);
 	if (!rc)
-		*blob_handle = be32_to_cpup(
-			(__be32 *)&buf->data[TPM_HEADER_SIZE]);
+		*blob_handle = get_unaligned_be32(&buf->data[TPM_HEADER_SIZE]);
 
 out:
 	if (created_parent)
 		tpm2_flush_context(chip, parent_handle);
 
 	return tpm_ret_to_err(rc);
+}
+
+/**
+ * tpm2_load_cmd() - execute a TPM2_Load command
+ *
+ * @chip: TPM chip to use
+ * @payload: the key data in clear and encrypted form
+ * @options: authentication values and other options
+ * @blob_handle: returned blob handle
+ *
+ * Return: 0 on success.
+ *        -E2BIG on wrong payload size.
+ *        -EPERM on tpm error status.
+ *        < 0 error from tpm_send.
+ */
+static int tpm2_load_cmd(struct tpm_chip *chip,
+			 struct trusted_key_payload *payload,
+			 struct trusted_key_options *options,
+			 u32 *blob_handle)
+{
+	u8 *blob_ref __free(kfree) = NULL;
+	struct trusted_key_tpm *private = options->private;
+	unsigned int private_len;
+	unsigned int public_len;
+	unsigned int blob_len;
+	u32 parent = 0;
+	u8 *blob, *pub;
+	int rc;
+	u32 attrs;
+
+	rc = tpm2_key_decode(payload, private, &parent, &blob, &blob_len, NULL);
+	if (rc) {
+		if (rc != -EBADMSG ||
+		    (payload->blob_len &&
+		     payload->blob[0] == (ASN1_CONS_BIT | ASN1_SEQ)))
+			return rc;
+
+		/* old form */
+		blob = payload->blob;
+		blob_len = payload->blob_len;
+		payload->old_format = 1;
+	} else {
+		/* Bind for cleanup: */
+		blob_ref = blob;
+		if (!private->keyhandle)
+			private->keyhandle = parent;
+	}
+
+	/* new format carries keyhandle but old format doesn't */
+	if (!private->keyhandle)
+		return -EINVAL;
+
+	/* must be big enough for at least the two be16 size counts */
+	if (blob_len < 4)
+		return -EINVAL;
+
+	private_len = get_unaligned_be16(blob);
+
+	/* must be big enough for following public_len */
+	if (private_len + 2 + 2 > blob_len)
+		return -E2BIG;
+
+	public_len = get_unaligned_be16(blob + 2 + private_len);
+	if (private_len + 2 + public_len + 2 > blob_len)
+		return -E2BIG;
+
+	if (public_len < 8)
+		return -EINVAL;
+
+	pub = blob + 2 + private_len + 2;
+	/* key attributes are always at offset 4 */
+	attrs = get_unaligned_be32(pub + 4);
+
+	if ((attrs & (TPM2_OA_FIXED_TPM | TPM2_OA_FIXED_PARENT)) ==
+	    (TPM2_OA_FIXED_TPM | TPM2_OA_FIXED_PARENT))
+		payload->migratable = 0;
+	else
+		payload->migratable = 1;
+
+	blob_len = private_len + public_len + 4;
+	if (blob_len > payload->blob_len)
+		return -E2BIG;
+
+	return tpm2_load_blob(chip, private, blob, blob_len, blob_handle);
+}
+
+static void tpm2_buf_append_key_auth(struct tpm_chip *chip,
+				     struct tpm_buf *buf,
+				     struct trusted_key_tpm *private,
+				     u8 hmac_attrs)
+{
+	if (!private->policyhandle) {
+		tpm_buf_append_hmac_session(chip, buf, hmac_attrs,
+					    private->blobauth,
+					    private->blobauth_len);
+		return;
+	}
+
+	/*
+	 * FIXME: The policy session was generated outside the kernel so we
+	 * don't know the nonce and thus can't calculate a HMAC on it.
+	 * Therefore, the user can only really use TPM2_PolicyPassword and we
+	 * must send down the plain text password, which could be intercepted.
+	 */
+	tpm_buf_append_u32(buf, 9 + private->blobauth_len);
+	tpm_buf_append_u32(buf, private->policyhandle);
+	tpm_buf_append_u16(buf, 0);
+	tpm_buf_append_u8(buf, 0);
+	tpm_buf_append_u16(buf, private->blobauth_len);
+	tpm_buf_append(buf, private->blobauth, private->blobauth_len);
+
+	if (tpm2_chip_auth(chip))
+		tpm_buf_append_hmac_session(chip, buf, hmac_attrs, NULL, 0);
 }
 
 /**
@@ -625,33 +673,7 @@ static int tpm2_unseal_cmd(struct tpm_chip *chip,
 	if (rc)
 		return rc;
 
-	if (!private->policyhandle) {
-		tpm_buf_append_hmac_session(chip, buf, TPM2_SA_ENCRYPT,
-					    private->blobauth,
-					    private->blobauth_len);
-	} else {
-		/*
-		 * FIXME: The policy session was generated outside the
-		 * kernel so we don't known the nonce and thus can't
-		 * calculate a HMAC on it.  Therefore, the user can
-		 * only really use TPM2_PolicyPassword and we must
-		 * send down the plain text password, which could be
-		 * intercepted.  We can still encrypt the returned
-		 * key, but that's small comfort since the interposer
-		 * could repeat our actions with the exfiltrated
-		 * password.
-		 */
-		tpm_buf_append_u32(buf, 9 + private->blobauth_len);
-		tpm_buf_append_u32(buf, private->policyhandle);
-		tpm_buf_append_u16(buf, 0);
-		tpm_buf_append_u8(buf, 0);
-		tpm_buf_append_u16(buf, private->blobauth_len);
-		tpm_buf_append(buf, private->blobauth, private->blobauth_len);
-
-		if (tpm2_chip_auth(chip))
-			tpm_buf_append_hmac_session(chip, buf, TPM2_SA_ENCRYPT,
-						    NULL, 0);
-	}
+	tpm2_buf_append_key_auth(chip, buf, private, TPM2_SA_ENCRYPT);
 
 	rc = tpm_buf_fill_hmac_session(chip, buf);
 	if (rc)
