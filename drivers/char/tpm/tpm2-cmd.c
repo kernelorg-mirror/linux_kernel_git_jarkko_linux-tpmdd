@@ -59,7 +59,7 @@ static const struct {
 	unsigned long duration;
 } tpm2_ordinal_duration_map[] = {
 	{TPM2_CC_STARTUP, 750},
-	{TPM2_CC_SELF_TEST, 3000},
+	{TPM2_CC_SELF_TEST, 4000},
 	{TPM2_CC_GET_RANDOM, 2000},
 	{TPM2_CC_SEQUENCE_UPDATE, 750},
 	{TPM2_CC_SEQUENCE_COMPLETE, 750},
