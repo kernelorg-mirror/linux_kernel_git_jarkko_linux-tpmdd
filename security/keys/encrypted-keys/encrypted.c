@@ -1000,6 +1000,7 @@ static int __init init_encrypted(void)
 static void __exit cleanup_encrypted(void)
 {
 	unregister_key_type(&key_type_encrypted);
+	rcu_barrier();
 }
 
 late_initcall(init_encrypted);
