@@ -406,6 +406,7 @@ static void __exit cleanup_trusted(void)
 {
 	if (trusted_key_exit)
 		(*trusted_key_exit)();
+	rcu_barrier();
 }
 
 late_initcall(init_trusted);
