@@ -422,9 +422,10 @@ static void mark_key_instantiated(struct key *key, int reject_error)
 
 /*
  * Instantiate a key and link it into the target keyring atomically.  Must be
- * called with the target keyring's semaphore writelocked.  The target key's
- * semaphore need not be locked as instantiation is serialised by
- * key_construction_mutex.
+ * called with the target keyring's semaphore writelocked.  The caller must
+ * hold key_type_srcu (after checking !KEY_FLAG_DEAD) or key_types_sem for
+ * reading via key_type_lookup(), so the type cannot be retyped to
+ * key_type_dead or its module unloaded while its methods run.
  */
 static int __key_instantiate_and_link(struct key *key,
 				      struct key_preparsed_payload *prep,
@@ -498,7 +499,9 @@ static int __key_instantiate_and_link(struct key *key,
  *
  * If successful, 0 is returned, the authorisation token is revoked and anyone
  * waiting for the key is woken up.  If the key was already instantiated,
- * -EBUSY will be returned.
+ * -EBUSY will be returned.  If the key's type has been removed, -EKEYREVOKED
+ * will be returned.  If the key type does not provide an instantiate method,
+ * -EOPNOTSUPP will be returned.
  */
 int key_instantiate_and_link(struct key *key,
 			     const void *data,
@@ -508,7 +511,25 @@ int key_instantiate_and_link(struct key *key,
 {
 	struct key_preparsed_payload prep;
 	struct assoc_array_edit *edit = NULL;
-	int ret;
+	int ret, srcu_idx;
+
+	/*
+	 * Hold key_type_srcu across key->type accesses and linking into
+	 * @keyring.  Pass 1 of key_garbage_collector() sets KEY_FLAG_DEAD
+	 * and runs synchronize_srcu(&key_type_srcu) before pass 2 unlinks
+	 * dead keys and pass 3 retypes them to key_type_dead.
+	 */
+	srcu_idx = srcu_read_lock(&key_type_srcu);
+
+	if (test_bit(KEY_FLAG_DEAD, &key->flags)) {
+		ret = -EKEYREVOKED;
+		goto out;
+	}
+
+	if (!key->type->instantiate) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
 
 	memset(&prep, 0, sizeof(prep));
 	prep.orig_description = key->description;
@@ -519,17 +540,17 @@ int key_instantiate_and_link(struct key *key,
 	if (key->type->preparse) {
 		ret = key->type->preparse(&prep);
 		if (ret < 0)
-			goto error;
+			goto out_free_preparse;
 	}
 
 	if (keyring) {
 		ret = __key_link_lock(keyring, &key->index_key);
 		if (ret < 0)
-			goto error;
+			goto out_free_preparse;
 
 		ret = __key_link_begin(keyring, &key->index_key, &edit);
 		if (ret < 0)
-			goto error_link_end;
+			goto out_link_end;
 
 		if (keyring->restrict_link && keyring->restrict_link->check) {
 			struct key_restriction *keyres = keyring->restrict_link;
@@ -537,19 +558,22 @@ int key_instantiate_and_link(struct key *key,
 			ret = keyres->check(keyring, key->type, &prep.payload,
 					    keyres->key);
 			if (ret < 0)
-				goto error_link_end;
+				goto out_link_end;
 		}
 	}
 
 	ret = __key_instantiate_and_link(key, &prep, keyring, authkey, &edit);
 
-error_link_end:
+out_link_end:
 	if (keyring)
 		__key_link_end(keyring, &key->index_key, edit);
 
-error:
+out_free_preparse:
 	if (key->type->preparse)
 		key->type->free_preparse(&prep);
+
+out:
+	srcu_read_unlock(&key_type_srcu, srcu_idx);
 	return ret;
 }
 
@@ -574,7 +598,10 @@ EXPORT_SYMBOL(key_instantiate_and_link);
  *
  * If successful, 0 is returned, the authorisation token is revoked and anyone
  * waiting for the key is woken up.  If the key was already instantiated,
- * -EBUSY will be returned.
+ * -EBUSY will be returned.  If the key's type has been removed, the key is
+ * left uninstantiated, the authorisation token is revoked, anyone waiting
+ * for the key is woken up, and -EKEYREVOKED is returned if @keyring was
+ * given.
  */
 int key_reject_and_link(struct key *key,
 			unsigned timeout,
@@ -583,7 +610,8 @@ int key_reject_and_link(struct key *key,
 			struct key *authkey)
 {
 	struct assoc_array_edit *edit = NULL;
-	int ret, awaken, link_ret = 0;
+	int ret, awaken, link_ret = 0, srcu_idx;
+	bool dead;
 
 	key_check(key);
 	key_check(keyring);
@@ -591,51 +619,88 @@ int key_reject_and_link(struct key *key,
 	awaken = 0;
 	ret = -EBUSY;
 
+	/*
+	 * Hold key_type_srcu across linking into @keyring and
+	 * key_set_expiry() (which reads key->type->flags).  If the key is
+	 * already marked dead, skip linking, key->sem, and negative
+	 * instantiation so wait_for_key_construction() wakes up and returns
+	 * -EKEYREVOKED via key_validate().
+	 */
+	srcu_idx = srcu_read_lock(&key_type_srcu);
+	dead = test_bit(KEY_FLAG_DEAD, &key->flags);
+
 	if (keyring) {
-		link_ret = __key_link_lock(keyring, &key->index_key);
-		if (link_ret == 0) {
-			/*
-			 * Check the restriction under the keyring semaphore.
-			 * keyring_restrict() installs it while holding the
-			 * semaphore, so testing it beforehand races with a
-			 * concurrent restriction install.
-			 */
-			if (keyring->restrict_link) {
-				__key_link_end(keyring, &key->index_key, edit);
-				return -EPERM;
+		if (dead) {
+			link_ret = -EKEYREVOKED;
+		} else {
+			link_ret = __key_link_lock(keyring, &key->index_key);
+			if (link_ret == 0) {
+				/*
+				 * Check the restriction under the keyring
+				 * semaphore. keyring_restrict() installs it
+				 * while holding the semaphore, so testing it
+				 * beforehand races with a concurrent
+				 * restriction install.
+				 */
+				if (keyring->restrict_link) {
+					__key_link_end(keyring, &key->index_key,
+						       edit);
+					ret = -EPERM;
+					goto out;
+				}
+				link_ret = __key_link_begin(keyring,
+							    &key->index_key,
+							    &edit);
+				if (link_ret < 0)
+					__key_link_end(keyring, &key->index_key,
+						       edit);
 			}
-			link_ret = __key_link_begin(keyring, &key->index_key, &edit);
-			if (link_ret < 0)
-				__key_link_end(keyring, &key->index_key, edit);
 		}
 	}
 
 	mutex_lock(&key_construction_mutex);
-	down_write_nested(&key->sem, 2);
 
-	/* can't instantiate twice */
-	if (key->state == KEY_IS_UNINSTANTIATED) {
-		/* mark the key as being negatively instantiated */
-		atomic_inc(&key->user->nikeys);
-		mark_key_instantiated(key, -error);
-		notify_key(key, NOTIFY_KEY_INSTANTIATED, -error);
-		key_set_expiry(key, ktime_get_real_seconds() + timeout);
+	if (dead) {
+		if (key->state == KEY_IS_UNINSTANTIATED) {
+			if (test_and_clear_bit(KEY_FLAG_USER_CONSTRUCT,
+					       &key->flags))
+				awaken = 1;
 
-		if (test_and_clear_bit(KEY_FLAG_USER_CONSTRUCT, &key->flags))
-			awaken = 1;
+			ret = 0;
 
-		ret = 0;
+			/* disable the authorisation key */
+			if (authkey)
+				key_invalidate(authkey);
+		}
+	} else {
+		down_write_nested(&key->sem, 2);
 
-		/* and link it into the destination keyring */
-		if (keyring && link_ret == 0)
-			__key_link(keyring, key, &edit);
+		/* can't instantiate twice */
+		if (key->state == KEY_IS_UNINSTANTIATED) {
+			/* mark the key as being negatively instantiated */
+			atomic_inc(&key->user->nikeys);
+			mark_key_instantiated(key, -error);
+			notify_key(key, NOTIFY_KEY_INSTANTIATED, -error);
+			key_set_expiry(key, ktime_get_real_seconds() + timeout);
 
-		/* disable the authorisation key */
-		if (authkey)
-			key_invalidate(authkey);
+			if (test_and_clear_bit(KEY_FLAG_USER_CONSTRUCT,
+					       &key->flags))
+				awaken = 1;
+
+			ret = 0;
+
+			/* and link it into the destination keyring */
+			if (keyring && link_ret == 0)
+				__key_link(keyring, key, &edit);
+
+			/* disable the authorisation key */
+			if (authkey)
+				key_invalidate(authkey);
+		}
+
+		up_write(&key->sem);
 	}
 
-	up_write(&key->sem);
 	mutex_unlock(&key_construction_mutex);
 
 	if (keyring && link_ret == 0)
@@ -645,7 +710,10 @@ int key_reject_and_link(struct key *key,
 	if (awaken)
 		wake_up_bit(&key->flags, KEY_FLAG_USER_CONSTRUCT);
 
-	return ret == 0 ? link_ret : ret;
+	ret = ret == 0 ? link_ret : ret;
+out:
+	srcu_read_unlock(&key_type_srcu, srcu_idx);
+	return ret;
 }
 EXPORT_SYMBOL(key_reject_and_link);
 

@@ -35,6 +35,8 @@ static unsigned long key_gc_flags;
 #define KEY_GC_REAP_KEYTYPE	1	/* A keytype is being unregistered */
 #define KEY_GC_REAPING_KEYTYPE	2	/* Cleared when keytype reaped */
 
+DEFINE_SRCU(key_type_srcu);
+
 
 /*
  * Any key whose type gets unregistered will be re-typed to this if it can't be
@@ -284,6 +286,17 @@ maybe_resched:
 	if (new_timer != TIME64_MAX) {
 		new_timer += key_gc_delay;
 		key_schedule_gc(new_timer);
+	}
+
+	if (unlikely((gc_state & KEY_GC_REAPING_DEAD_1) &&
+		     (gc_state & KEY_GC_FOUND_DEAD_KEY))) {
+		/* Wait for any in-flight key_instantiate_and_link() or
+		 * key_reject_and_link() calls that did not observe
+		 * KEY_FLAG_DEAD before pass 2 unlinks dead keys from keyrings
+		 * and pass 3 retypes them to key_type_dead.
+		 */
+		kdebug("gc dead type sync");
+		synchronize_srcu(&key_type_srcu);
 	}
 
 	if (unlikely(gc_state & KEY_GC_REAPING_DEAD_2) ||
