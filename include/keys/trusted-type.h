@@ -27,6 +27,9 @@
 #define MAX_PCRINFO_SIZE		64
 #define MAX_DIGEST_SIZE			64
 
+struct kernel_pkey_params;
+struct kernel_pkey_query;
+
 struct trusted_key_payload {
 	struct rcu_head rcu;
 	unsigned int key_len;
@@ -61,6 +64,17 @@ struct trusted_key_ops {
 
 	/* Optional: Get a randomized key. */
 	int (*get_random)(unsigned char *key, size_t key_len);
+
+	/* Optional: Asymmetric key operations. */
+	int (*asym_query)(const struct trusted_key_payload *p,
+			  const struct kernel_pkey_params *params,
+			  struct kernel_pkey_query *info);
+	int (*asym_eds_op)(const struct trusted_key_payload *p,
+			   struct kernel_pkey_params *params,
+			   const void *in, void *out);
+	int (*asym_verify_signature)(const struct trusted_key_payload *p,
+				     struct kernel_pkey_params *params,
+				     const void *in, const void *in2);
 
 	/* Exit key interface. */
 	void (*exit)(void);

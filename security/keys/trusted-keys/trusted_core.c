@@ -18,6 +18,7 @@
 #include <linux/hex.h>
 #include <linux/init.h>
 #include <linux/key-type.h>
+#include <linux/keyctl.h>
 #include <linux/module.h>
 #include <linux/parser.h>
 #include <linux/random.h>
@@ -64,6 +65,14 @@ DEFINE_STATIC_CALL_NULL(trusted_key_unseal,
 			*trusted_key_sources[0].ops->unseal);
 DEFINE_STATIC_CALL_NULL(trusted_key_get_random,
 			*trusted_key_sources[0].ops->get_random);
+#ifdef CONFIG_TRUSTED_KEYS_ASYMMETRIC
+DEFINE_STATIC_CALL_NULL(trusted_key_asym_query,
+			*trusted_key_sources[0].ops->asym_query);
+DEFINE_STATIC_CALL_NULL(trusted_key_asym_eds_op,
+			*trusted_key_sources[0].ops->asym_eds_op);
+DEFINE_STATIC_CALL_NULL(trusted_key_asym_verify_signature,
+			*trusted_key_sources[0].ops->asym_verify_signature);
+#endif
 static void (*trusted_key_exit)(void);
 static unsigned char migratable __ro_after_init;
 
@@ -333,6 +342,78 @@ static void trusted_destroy(struct key *key)
 	trusted_payload_free(key->payload.data[0]);
 }
 
+#ifdef CONFIG_TRUSTED_KEYS_ASYMMETRIC
+static int trusted_asym_query(const struct kernel_pkey_params *params,
+			      struct kernel_pkey_query *info)
+{
+	const struct trusted_key_payload *p;
+
+	p = dereference_key_locked(params->key);
+	if (!p || p->key_len || !p->private)
+		return -EOPNOTSUPP;
+
+	return static_call(trusted_key_asym_query)(p, params, info);
+}
+
+static int trusted_asym_eds_op(struct kernel_pkey_params *params,
+			       const void *in, void *out)
+{
+	const struct trusted_key_payload *p;
+
+	p = dereference_key_locked(params->key);
+	if (!p || p->key_len || !p->private)
+		return -EOPNOTSUPP;
+
+	return static_call(trusted_key_asym_eds_op)(p, params, in, out);
+}
+
+static int trusted_asym_verify_signature(struct kernel_pkey_params *params,
+					 const void *in, const void *in2)
+{
+	const struct trusted_key_payload *p;
+
+	p = dereference_key_locked(params->key);
+	if (!p || p->key_len || !p->private)
+		return -EOPNOTSUPP;
+
+	return static_call(trusted_key_asym_verify_signature)(p, params,
+							      in, in2);
+}
+
+static void trusted_asym_init(const struct trusted_key_ops *ops)
+{
+	if (!ops->asym_query || !ops->asym_eds_op ||
+	    !ops->asym_verify_signature)
+		return;
+
+	static_call_update(trusted_key_asym_query, ops->asym_query);
+	static_call_update(trusted_key_asym_eds_op, ops->asym_eds_op);
+	static_call_update(trusted_key_asym_verify_signature,
+			   ops->asym_verify_signature);
+	key_type_trusted.asym_query = trusted_asym_query;
+	key_type_trusted.asym_eds_op = trusted_asym_eds_op;
+	key_type_trusted.asym_verify_signature = trusted_asym_verify_signature;
+}
+
+static void trusted_asym_reset(void)
+{
+	static_call_update(trusted_key_asym_query, NULL);
+	static_call_update(trusted_key_asym_eds_op, NULL);
+	static_call_update(trusted_key_asym_verify_signature, NULL);
+	key_type_trusted.asym_query = NULL;
+	key_type_trusted.asym_eds_op = NULL;
+	key_type_trusted.asym_verify_signature = NULL;
+}
+#else
+static inline void trusted_asym_init(const struct trusted_key_ops *ops)
+{
+}
+
+static inline void trusted_asym_reset(void)
+{
+}
+#endif
+
 struct key_type key_type_trusted = {
 	.name = "trusted",
 	.instantiate = trusted_instantiate,
@@ -384,6 +465,7 @@ static int __init init_trusted(void)
 		static_call_update(trusted_key_seal, trusted_key_sources[i].ops->seal);
 		static_call_update(trusted_key_unseal, trusted_key_sources[i].ops->unseal);
 		static_call_update(trusted_key_get_random, get_random);
+		trusted_asym_init(trusted_key_sources[i].ops);
 		migratable = trusted_key_sources[i].ops->migratable;
 
 		ret = trusted_key_sources[i].ops->init();
@@ -393,6 +475,7 @@ static int __init init_trusted(void)
 			static_call_update(trusted_key_seal, NULL);
 			static_call_update(trusted_key_unseal, NULL);
 			static_call_update(trusted_key_get_random, NULL);
+			trusted_asym_reset();
 			migratable = 0;
 		}
 

@@ -4,6 +4,20 @@ config HAVE_TRUSTED_KEYS
 config HAVE_TRUSTED_KEYS_DEBUG
 	bool
 
+config HAVE_TRUSTED_KEYS_ASYMMETRIC
+	bool
+
+config TRUSTED_KEYS_ASYMMETRIC
+	bool "Asymmetric trusted keys"
+	depends on HAVE_TRUSTED_KEYS_ASYMMETRIC
+	default y
+	select KEYCTL_PKEY
+	help
+	  Allow trusted key backends that support asymmetric keys to load
+	  public/private key blobs and expose them through the keyctl
+	  public-key operations (query, encrypt, decrypt, sign, and verify)
+	  without changing support for sealed symmetric keys.
+
 config TRUSTED_KEYS_DEBUG
 	bool "Debug trusted keys"
 	depends on HAVE_TRUSTED_KEYS_DEBUG
